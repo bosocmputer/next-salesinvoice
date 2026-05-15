@@ -222,6 +222,7 @@ func (d RouterDeps) bulkDocumentChangeApply(c *gin.Context) {
 		"appliedCount": result.AppliedCount,
 		"failedCount":  result.FailedCount,
 		"blockedCount": result.BlockedCount,
+		"skippedCount": result.SkippedCount,
 	})
 	response.OK(c, nethttp.StatusOK, "bulk documents updated", result)
 }
@@ -493,6 +494,10 @@ func (d RouterDeps) databaseBootstrap(c *gin.Context) {
 	snapshot, err := d.state.Reconnect(c.Request.Context(), cfg)
 	if err != nil {
 		response.Error(c, nethttp.StatusInternalServerError, errorcode.DatabaseVerification, "database setup failed", err.Error())
+		return
+	}
+	if err := snapshot.Migrator.VerifyAndMigrate(c.Request.Context()); err != nil {
+		response.Error(c, nethttp.StatusInternalServerError, errorcode.DatabaseVerification, "database setup migration failed", err.Error())
 		return
 	}
 	status, err := snapshot.Migrator.Verify(c.Request.Context())

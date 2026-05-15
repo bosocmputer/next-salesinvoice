@@ -81,9 +81,9 @@ func buildSnapshot(ctx context.Context, cfg config.Config, sessions *session.Man
 		return nil, fmt.Errorf("connect database: %w", err)
 	}
 	migrator := migration.New(pool, cfg)
-	if err := migrator.VerifyAndMigrate(ctx); err != nil {
+	if _, err := migrator.Verify(ctx); err != nil {
 		pool.Close()
-		return nil, fmt.Errorf("verify and migrate database: %w", err)
+		return nil, fmt.Errorf("verify database: %w", err)
 	}
 
 	auditLogger := audit.NewLogger(pool, cfg)

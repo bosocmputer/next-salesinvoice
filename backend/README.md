@@ -1,8 +1,8 @@
 # next-salesinvoice Backend
 
-Go + Gin backend for the SML ERP sales invoice workflow.
+Go + Gin API สำหรับ workflow แก้ไขบิลขาย SML อย่างปลอดภัย
 
-## Run locally
+## Run Locally
 
 ```bash
 cd backend
@@ -13,70 +13,91 @@ SML_DB_HOST=192.168.2.248 \
 SML_DB_PORT=5432 \
 SML_DB_NAME=sml1_2026 \
 SML_DB_USER=postgres \
-SML_DB_PASSWORD=sml \
+SML_DB_PASSWORD=<dev-db-password> \
 SML_DB_SSLMODE=disable \
 SML_DB_SCHEMA=public \
 go run ./cmd/server
 ```
 
-## Current endpoints
+## Current Behavior
+
+- Startup/reconnect runs database verify only
+- `GET /api/v1/system/database-status` is read-only
+- Creating/updating `nsi_*` tables is an explicit Admin action via `POST /api/v1/system/database-migrate`
+- All protected write/admin endpoints require authenticated Admin role
+- App tables use prefix `nsi_`
+- SML-owned tables are not migrated by this app
+
+## Main Endpoints
+
+System:
 
 - `GET /api/v1/health`
 - `GET /api/v1/system/database-status`
 - `POST /api/v1/system/database-verify`
 - `POST /api/v1/system/database-migrate`
+- `GET /api/v1/system/database-config`
+- `PUT /api/v1/system/database-config`
+- `POST /api/v1/system/database-reconnect`
+- `POST /api/v1/system/database-bootstrap`
+
+Auth:
+
 - `POST /api/v1/auth/login`
 - `POST /api/v1/auth/logout`
 - `GET /api/v1/auth/me`
+
+Documents:
+
 - `GET /api/v1/documents?from=&to=&page=&pageSize=&q=`
 - `GET /api/v1/documents/:docNo/details`
-- `POST /api/v1/documents/:docNo/preview-change`
-- `POST /api/v1/documents/:docNo/apply-change`
 - `POST /api/v1/documents/bulk/preview-change`
 - `POST /api/v1/documents/bulk/apply-change`
 - `POST /api/v1/documents/rollback`
 - `GET /api/v1/documents/running-number?formatCode=`
+
+Master data:
+
 - `GET /api/v1/master/doc-formats`
 - `GET /api/v1/master/customers?q=&limit=`
 - `GET /api/v1/master/products?q=&limit=`
 - `GET /api/v1/master/sale-types`
 - `GET /api/v1/master/tax-types`
+
+Audit:
+
+- `GET /api/v1/audit-documents?q=&limit=`
 - `GET /api/v1/audit-logs?resourceId=&limit=`
 
-## Dev login
+Compatibility/internal:
 
-- Code: `EMP001`
-- Password: `1234`
+- `GET /api/v1/documents/selectable-doc-nos` still exists for compatibility, but the current UI does not expose server-side mass selection
 
-## Production hardening
+## Document Search
 
-- Set `APP_ENV=production`.
-- Set a unique `SESSION_SECRET`; the development secret is rejected in production.
-- Keep `SML_DB_MAX_CONNS` at `5` or lower. Default is `3`.
-- Keep `SML_DB_MIN_CONNS=0` so the app does not hold idle connections to SML.
-- Keep `NSI_AUTO_CREATE_PERFORMANCE_INDEXES=true` unless DBAs want to create and tune indexes manually.
-- Use `REQUEST_BODY_LIMIT_BYTES=1048576` unless a larger payload is proven necessary.
-- Put the backend behind HTTPS in production. Session cookies are `Secure`, `HttpOnly`, and `SameSite=Strict` when `APP_ENV=production`.
-- Only `Admin` role can run DB-write and admin-sensitive endpoints:
-  - `POST /api/v1/system/database-migrate`
-  - `POST /api/v1/documents/:docNo/apply-change`
-  - `POST /api/v1/documents/bulk/apply-change`
-  - `POST /api/v1/documents/rollback`
-  - `GET /api/v1/audit-logs`
-- Always test with a copied SML database before connecting to a customer's live database.
+`GET /api/v1/documents` and audit document search support:
 
-## Integration tests
+- fuzzy search for normal text
+- exact doc list: `INV26050025,INV26050026`
+- inclusive doc range: `INV26050025:INV26050030`
+- mixed list/range: `INV26050025:INV26050030,INV26050040`
 
-Normal `go test ./...` never touches SML. Database integration tests are skipped unless `NSI_INTEGRATION_DATABASE_URL` is set.
+Invalid range/list syntax falls back to the normal fuzzy search path.
 
-Use only a cloned/test PostgreSQL database. If the URL contains `sml1_2026`, the test requires `NSI_ALLOW_SML1_2026_INTEGRATION=1` to confirm that this database is not live production data.
+## Tests
 
 ```bash
 cd backend
-NSI_INTEGRATION_DATABASE_URL='postgres://postgres:password@127.0.0.1:5432/nsi_test?sslmode=disable' \
-NSI_ALLOW_SML1_2026_INTEGRATION=0 \
-GOCACHE="$PWD/.gocache" GOPATH="$PWD/.gopath" \
-go test ./internal/repository -run Integration -count=1
+GOCACHE="$PWD/.gocache" GOPATH="$PWD/.gopath" go test ./...
 ```
 
-The integration test creates a temporary schema, seeds minimal SML-shaped tables, verifies preview/apply/recalculate behavior, verifies invalid input does not mutate the document, then drops the schema.
+Integration tests are skipped unless `NSI_INTEGRATION_DATABASE_URL` is set. Use only a cloned/test database for integration runs.
+
+## Production Notes
+
+- Set `APP_ENV=production`
+- Set a unique `SESSION_SECRET`
+- Keep `SML_DB_MAX_CONNS` conservative, default `3`
+- Do not log full connection strings or passwords
+- Put the backend behind HTTPS
+- Test write/rollback flows on a cloned SML database before live use

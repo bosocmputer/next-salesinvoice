@@ -1,43 +1,52 @@
 # next-salesinvoice Session Handoff
 
-Last updated: 2026-05-13 20:31 Asia/Bangkok
+Last updated: 2026-05-15 Asia/Bangkok
 
-This file is the short context snapshot for starting a new Codex chat session.
+ไฟล์นี้คือ checkpoint ล่าสุดสำหรับเปิด chat ใหม่หรือส่งต่อให้ AI ตัวอื่นทำงานต่อ อ่านคู่กับ `README.md` ก่อนแก้โค้ดเสมอ
 
-## Project Identity
+## AI Continuation Notes
 
-- Project name: `next-salesinvoice`
-- Purpose: web app for safely editing SML ERP sales/service invoices in the target SML PostgreSQL database.
-- Current concept: work only on the connected target database, normally the transferred `data2` database. Do not touch `data1` or the SML transfer process.
-- Current dev/test DB: `sml1_2026`
-- Local app URL: `http://127.0.0.1:3000/`
+1. อ่าน `README.md` ก่อนเพื่อเข้าใจระบบรวม
+2. อ่านไฟล์นี้เพื่อรู้สถานะล่าสุดของ session และ dirty worktree
+3. อย่าอ้างอิงเอกสารเก่า `genesis-DESIGN.md`, `next-salesinvoice-dev-plan.md`, `next-salesinvoice-test-report.md` เพราะถูกลบออกเพื่อกันข้อมูลล้าสมัย
+4. ก่อนแก้โค้ด ให้ตรวจ `git status --short` เพราะ worktree มีงานที่ยังไม่ commit จากหลายรอบ
+5. ห้าม revert ไฟล์ที่มีการแก้ไว้แล้ว เว้นแต่ user สั่งชัดเจน
+
+## Current Environment
+
+- Project: `next-salesinvoice`
+- Purpose: safely edit SML ERP sales/service invoices in the connected PostgreSQL database
+- Current staging DB: `sml1_2026`
+- Frontend URL: `http://127.0.0.1:3000/`
 - Backend URL: `http://127.0.0.1:8080/`
+- Backend dev server was restarted in this session after the latest backend migration-behavior change
+- Latest health check: `GET /api/v1/health` returned healthy
 
 ## Stack
 
-- Backend: Go + Gin
-- Frontend: React + Vite
-- Main frontend files:
-  - `frontend/src/App.tsx`
-  - `frontend/src/styles.css`
-- Main docs:
-  - `README.md`
-  - `next-salesinvoice-dev-plan.md`
-  - `next-salesinvoice-test-report.md`
+- Backend: Go 1.24, Gin, pgx
+- Frontend: React 18, Vite, TypeScript
+- UI: Material UI (`@mui/material`, `@mui/x-data-grid`) with `sx` styling
+- JSON audit dialog: `@uiw/react-json-view`
+- Icons: `lucide-react`
+- Legacy utility/custom UI stack has been removed from the current UI
 
-## Core SML Tables
+## Core Data Model
 
-- Login: `erp_user`
-- Sales header: `ic_trans`
-- Sales detail: `ic_trans_detail`
-- Sales/service filter: `trans_flag = 44`
-- Document format: `erp_doc_format where screen_code = 'SI'`
-- Customer: `ar_customer`
-- Product: `ic_inventory`
+SML tables:
 
-## App-Owned Tables
+- `erp_user`
+- `ic_trans`
+- `ic_trans_detail`
+- `erp_doc_format`
+- `ar_customer`
+- `ic_inventory`
 
-All app tables use prefix `nsi_` and are created in the connected SML database:
+Main filter:
+
+- `ic_trans.trans_flag = 44`
+
+App-owned tables:
 
 - `nsi_schema_migrations`
 - `nsi_app_users`
@@ -48,115 +57,110 @@ All app tables use prefix `nsi_` and are created in the connected SML database:
 - `nsi_document_snapshots`
 - `nsi_document_locks`
 
-## Users / Permission
+## Permissions
 
 - `EMP001 / 1234`: Admin when `erp_user.title = admin`
-- `EMP002 / 1234`: User when `erp_user.title` is not `admin`
-- Admin can apply changes, rollback, view audit, and manage DB config.
-- User can view/search but cannot perform protected Admin actions.
-
-## Current Completed Flow
-
-- Login/logout/session
-- Database readiness check and migration
-- Document list with search/pagination and SML-style sales invoice grid
-- Single document edit:
-  - choose document format
-  - run next document number
-  - choose customer
-  - choose sale type/tax type
-  - edit remark
-  - choose products to remove
-  - preview
-  - confirm apply
-- Bulk edit:
-  - select visible rows
-  - select matching results from server up to 300 documents
-  - choose shared config
-  - preview per document
-  - confirm apply only ready documents
-- Apply writes to `ic_trans` and `ic_trans_detail` in transaction.
-- Apply creates lock, batch/status, raw snapshot, and audit log.
-- Admin rollback restores from snapshot.
-- Database config UI saves to `nsi_app_settings`.
-- Reconnect verifies/migrates target DB before switching runtime connection.
-- Confirmation modals exist before risky actions:
-  - bulk apply
-  - rollback
-  - save database config
-  - reconnect database
-- Invoice detail dialog is reusable and can receive document/detail-line data directly.
-- Audit history can open invoice detail dialogs for before/after snapshots when history rows exist.
+- Admin can apply changes, rollback, view audit, and run system setup actions
+- Normal users can view/search but cannot perform protected write/admin actions
 
 ## Latest UX/UI State
 
-- Minimal clean workbench for general staff.
-- Menus are separate pages, not scroll anchors.
-- Responsive mobile/tablet navigation.
-- Font system uses `Noto Sans Thai`.
-- The database config page spacing issue between the action strip and summary grid was fixed in `frontend/src/styles.css`.
-- Invoice detail dialog was redesigned around SML familiarity:
-  - full-width document-style dialog
-  - header/footer use plain text rather than inputs
-  - item lines use `ic_trans_detail`
-  - shows `wh_code` and `shelf_code`
-  - supports ESC and header X to close
-  - reused by audit before/after dialogs
-- Bulk edit settings dialog search fields were stabilized:
-  - shared dropdown-search component for customer and product
-  - customer dropdown floats below the input
-  - product dropdown opens upward to avoid being clipped near the dialog footer
-  - selected products are capped in a scrollable chip area
-- `/bulk-edit` sales invoice list now follows SML-style columns:
-  - `ic_trans.doc_date` -> `วันที่เอกสาร` shown as Buddhist year date, for example `12/5/2569`
-  - `ic_trans.doc_time` -> `เวลา`
-  - `ic_trans.doc_no` -> `เลขที่เอกสาร`
-  - `ic_trans.cust_code` -> `รหัสลูกหนี้`
-  - `ic_trans.remark` -> `หมายเหตุ`
-  - `ic_trans.total_amount` -> `ยอดสุทธิ`
-  - `ดูรายละเอียด` button opens the invoice detail dialog
-- Current known UX direction: keep layout close to SML where staff familiarity matters, while keeping the next-salesinvoice visual language.
+`/bulk-edit`:
+
+- Compact MUI/DataGrid workbench
+- Header redesigned as context bar with DB status chip
+- Search supports text, list, and range syntax such as `INV26050025:INV26050030,INV26050040`
+- Search input has clear text action
+- Reload keeps current filters/search and refreshes data
+- Bulk select-by-result button was removed from UI
+- Selection action bar appears only after selecting rows
+- Settings dialog uses compact one-row header and MUI controls
+- Preview loading dialog appears while backend builds preview
+- Preview dialog no longer requires user to mark each bill as read/checked
+- User can choose documents in queue, inspect change summary, then send writable bills into SML
+- Confirm dialog still appears before real write
+
+`/audit`:
+
+- Compact DataGrid-style history view
+- Search follows the same document list/range behavior as `/bulk-edit`
+- Old/new invoice detail dialogs use one-row header
+- Changed fields are highlighted
+- Technical dialog uses JSON view and highlights changed JSON paths
+
+`/system/status`:
+
+- Admin-only diagnostic/setup page
+- `GET /api/v1/system/database-status` is read-only
+- If `nsi_*` tables are missing and SML tables are ready, Admin sees `ติดตั้งตารางระบบ`
+- If required SML tables are missing, install button is disabled and missing tables are shown
+- Current `sml1_2026` status: connected, SML ready, app schema ready
+
+## Latest Backend Behavior
+
+- Runtime startup/reconnect verifies database with `Verify()` only
+- It no longer silently creates `nsi_*` tables during status/startup
+- Explicit Admin migration uses `POST /api/v1/system/database-migrate`
+- Login/auth still depends on `nsi_app_users`; a brand-new SML database should be installed through setup/bootstrap or Admin system action before normal use
+- `database-bootstrap` with setup secret remains an explicit setup path and runs migration after reconnect
+- Document search parser supports exact list/range syntax and falls back to fuzzy search for normal text
+- Audit document search uses the same parser behavior
+
+## Dirty Worktree Summary
+
+Expected important modified/deleted files from current work:
+
+- `backend/internal/appruntime/state.go`
+- `backend/internal/http/router.go`
+- `backend/internal/model/document.go`
+- `backend/internal/repository/audit_repository.go`
+- `backend/internal/repository/document_repository.go`
+- `backend/internal/repository/document_repository_test.go`
+- `frontend/package.json`
+- `frontend/package-lock.json`
+- `frontend/src/App.tsx`
+- `frontend/src/styles.css`
+- removed old custom UI/config files under `frontend/src/components/ui`, `frontend/src/lib/utils.ts`, `frontend/components.json`, `frontend/postcss.config.js`, `frontend/tailwind.config.ts`
+- documentation cleanup updates these docs and deletes old root docs
+
+Do not assume these changes are committed.
 
 ## Latest Verification
 
-Last verified on 2026-05-13:
+Passed in this session:
 
-- Frontend `npm run build`: Pass after latest table/dialog changes.
-- Backend `go test ./...`: Pass earlier in this session; no backend code changed after that.
-- Browser preview:
-  - `/bulk-edit` displayed the SML-style sales invoice list.
-  - Invoice detail dialog opened from invoice rows.
-  - Settings dialog customer/product dropdown behavior was manually previewed.
-- Current local URLs:
-  - Frontend: `http://127.0.0.1:3000/`
-  - Backend: `http://127.0.0.1:8080/`
+- `npm run build`
+- `go test ./...`
+- `GET http://127.0.0.1:8080/api/v1/health`
+- Browser QA script for `/system/status`
+  - desktop `1440x900`
+  - mobile `390x844`
+  - mock missing `nsi_*` tables
+  - mock missing SML tables
+  - horizontal overflow: false
+  - console errors: 0
 
-Audit artifacts:
+QA artifact:
 
-- `/private/tmp/next-salesinvoice-usability-audit/`
-- `/private/tmp/next-salesinvoice-usability-audit/report.json`
-- `/private/tmp/next-salesinvoice-responsive-audit/`
-- `/private/tmp/next-salesinvoice-responsive-audit/report.json`
+- `/private/tmp/next-salesinvoice-system-status-qa/report.json`
 
 ## Important Safety Rules
 
-- Verify actual DB/schema before assuming.
-- Do not write to SML before preview/validation.
-- Keep writes in transactions.
-- Keep connection pool conservative.
-- Do not log or return database passwords.
-- Do not alter SML-owned tables except intended document updates.
-- App tables must stay under `nsi_`.
-- If DB changes, verify/migrate `nsi_*` tables in the new DB before use.
+- Verify actual DB/schema before assuming
+- Never write to SML without preview and confirm
+- Keep writes in transactions
+- Keep document lock at apply time
+- Always snapshot before write
+- Do not log or return database passwords
+- Do not alter SML-owned tables except intended document updates
+- Keep app tables under `nsi_`
+- If moving to a new SML database, check `/system/status` and install `nsi_*` explicitly
 
-## Open Work / Production Before-Go-Live
+## Remaining Work
 
-- Stress test with production-scale/customer-size data:
-  - 1,000 bills
-  - 10,000 bills
-  - 100,000 bills
-- Multi-user conflict/stress test on staging or backup clone.
-- Full E2E test that safely seeds/restores test data and clicks apply/rollback actions.
-- Production deploy/runbook.
-- Password-at-rest hardening for saved DB config.
-- Further UX polish from real staff feedback.
+- Run staging real-write + rollback after any risky backend change if user confirms staging write
+- Stress test with production-like data sizes
+- Multi-user conflict/stress test
+- Full E2E seed/apply/rollback regression suite
+- Password-at-rest hardening for saved DB config
+- Production deploy/runbook and monitoring/logging

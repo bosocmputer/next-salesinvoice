@@ -32,6 +32,67 @@ func TestNormalizeChangeRequestTrimsAndDeduplicates(t *testing.T) {
 	}
 }
 
+func TestParseDocumentSearchSupportsDocRangesAndExactList(t *testing.T) {
+	filter := parseDocumentSearch("INV26050025:INV26050030,INV26050040")
+
+	if !filter.advanced {
+		t.Fatalf("expected advanced document search")
+	}
+	if !reflect.DeepEqual(filter.exactDocNos, []string{"INV26050040"}) {
+		t.Fatalf("exact docs = %#v, want INV26050040", filter.exactDocNos)
+	}
+	if !reflect.DeepEqual(filter.ranges, []documentSearchRange{{start: "INV26050025", end: "INV26050030"}}) {
+		t.Fatalf("ranges = %#v", filter.ranges)
+	}
+}
+
+func TestParseDocumentSearchSupportsWhitespaceListAndNormalizesCase(t *testing.T) {
+	filter := parseDocumentSearch("inv26050025:inv26050030 INV26050040")
+
+	if !filter.advanced {
+		t.Fatalf("expected advanced document search")
+	}
+	if !reflect.DeepEqual(filter.exactDocNos, []string{"INV26050040"}) {
+		t.Fatalf("exact docs = %#v, want INV26050040", filter.exactDocNos)
+	}
+	if !reflect.DeepEqual(filter.ranges, []documentSearchRange{{start: "INV26050025", end: "INV26050030"}}) {
+		t.Fatalf("ranges = %#v", filter.ranges)
+	}
+}
+
+func TestParseDocumentSearchSupportsCommaSeparatedExactDocuments(t *testing.T) {
+	filter := parseDocumentSearch("INV26050025, INV26050026")
+
+	if !filter.advanced {
+		t.Fatalf("expected advanced document search")
+	}
+	if !reflect.DeepEqual(filter.exactDocNos, []string{"INV26050025", "INV26050026"}) {
+		t.Fatalf("exact docs = %#v, want both comma-separated documents", filter.exactDocNos)
+	}
+	if len(filter.ranges) != 0 {
+		t.Fatalf("ranges = %#v, want no ranges", filter.ranges)
+	}
+}
+
+func TestParseDocumentSearchFallsBackToFuzzyForNormalAndInvalidQueries(t *testing.T) {
+	tests := []string{
+		"AR00001",
+		"ทดสอบครั้งที่ 1",
+		"INV26050025:30",
+	}
+	for _, query := range tests {
+		t.Run(query, func(t *testing.T) {
+			filter := parseDocumentSearch(query)
+			if filter.advanced {
+				t.Fatalf("expected fuzzy search fallback for %q, got %#v", query, filter)
+			}
+			if filter.search != query {
+				t.Fatalf("search = %q, want %q", filter.search, query)
+			}
+		})
+	}
+}
+
 func TestValidateChangeRequestRejectsUnknownRemoveItemForDocument(t *testing.T) {
 	repo := &DocumentRepository{}
 	err := repo.validateChangeRequest(context.Background(), fakeDocumentQuerier{
@@ -102,6 +163,22 @@ func TestBuildChangePreviewRecalculatesTotalsAndSplitsLines(t *testing.T) {
 	}
 }
 
+func TestSplitPreviewDetailLinesUsesBatchRemoveHits(t *testing.T) {
+	lines := []model.DocumentDetailLine{
+		{DocNo: "DOC001", LineNumber: 1, ItemCode: "KEEP"},
+		{DocNo: "DOC001", LineNumber: 2, ItemCode: "REMOVE"},
+		{DocNo: "DOC001", LineNumber: 3, ItemCode: "KEEP2"},
+	}
+
+	removed, remaining := splitPreviewDetailLines(lines, []string{"REMOVE"})
+	if len(removed) != 1 || removed[0].ItemCode != "REMOVE" {
+		t.Fatalf("unexpected removed lines: %#v", removed)
+	}
+	if len(remaining) != 2 || remaining[0].ItemCode != "KEEP" || remaining[1].ItemCode != "KEEP2" {
+		t.Fatalf("unexpected remaining lines: %#v", remaining)
+	}
+}
+
 func TestEnsureDocumentHasLinesBlocksEmptyDocument(t *testing.T) {
 	err := ensureDocumentHasLines(model.DocumentTotals{LineCount: 0})
 	if err == nil || !strings.Contains(err.Error(), "at least one detail line") {
@@ -109,6 +186,23 @@ func TestEnsureDocumentHasLinesBlocksEmptyDocument(t *testing.T) {
 	}
 	if err := ensureDocumentHasLines(model.DocumentTotals{LineCount: 1}); err != nil {
 		t.Fatalf("expected non-empty document to pass, got %v", err)
+	}
+}
+
+func TestNormalizeDocumentWriteErrorDetectsDuplicateDocNo(t *testing.T) {
+	err := normalizeDocumentWriteError(&pgconn.PgError{
+		Code:           "23505",
+		ConstraintName: "ic_trans_ic_trans_pk_primary",
+		Detail:         "Key (doc_no, trans_flag)=(BF-INV26050001, 44) already exists.",
+	}, "BF-INV26050001")
+	if err == nil {
+		t.Fatal("expected duplicate document number error")
+	}
+	if !isDuplicateDocumentNumberError(err) {
+		t.Fatalf("expected duplicate error type, got %T", err)
+	}
+	if !strings.Contains(err.Error(), "BF-INV26050001") || !strings.Contains(err.Error(), "ตรวจสอบใหม่") {
+		t.Fatalf("unexpected user-facing message: %v", err)
 	}
 }
 

@@ -1,10 +1,21 @@
 # next-salesinvoice Frontend
 
-React + Vite frontend for the SML ERP sales invoice workflow.
+React + Vite frontend สำหรับ workflow แก้ไขบิลขาย SML
 
-## Run locally
+## Stack
 
-Start the backend first on port `8080`, then:
+- React 18
+- Vite
+- TypeScript
+- Material UI: `@mui/material`, `@mui/x-data-grid`
+- JSON technical view: `@uiw/react-json-view`
+- Icons: `lucide-react`
+
+ระบบ utility/custom UI เก่าถูกถอดออกจาก frontend ปัจจุบันแล้ว
+
+## Run Locally
+
+เริ่ม backend ที่ port `8080` ก่อน แล้วรัน:
 
 ```bash
 cd frontend
@@ -12,25 +23,38 @@ npm install
 npm run dev
 ```
 
-Open `http://127.0.0.1:3000`.
+เปิด:
+
+```text
+http://127.0.0.1:3000
+```
+
+## Build
+
+```bash
+cd frontend
+npm run build
+```
 
 ## Routes
 
-The frontend uses browser routes so links can be opened directly, refreshed, and shared.
+- `/login`: เข้าสู่ระบบ
+- `/bulk-edit`: หน้าเลือกบิล ตั้งค่า preview และส่งเข้า SML
+- `/audit`: ประวัติ/rollback/technical JSON สำหรับ Admin
+- `/audit/:docNo`: เปิด audit โดยระบุเลขบิล
+- `/system/status`: Admin diagnostic/setup สำหรับสถานะฐานและติดตั้ง `nsi_*`
+- `/system/database`: legacy redirect ไป `/system/status`
 
-- `/login` - sign in
-- `/invoices` - search invoices, supports `from`, `to`, and `q` query params
-- `/invoices/:docNo` - selected invoice in the search workbench
-- `/invoices/:docNo/edit` - edit one invoice, supports `stage=setup|items|review|save`
-- `/bulk-edit` - bulk invoice edit, supports `from`, `to`, and `q` query params
-- `/audit` and `/audit/:docNo` - audit and rollback tools, Admin only
-- `/system/status` - readiness checks
-- `/system/database` - database connection settings, Admin only
+## UI Conventions
 
-Production deployments must route non-API paths back to `index.html` so direct links like
-`/invoices/INV26050001/edit` load the SPA instead of returning 404.
+- ใช้ MUI components เป็นหลัก
+- ใช้ `sx` เฉพาะจุดที่จำเป็น
+- Table-heavy pages ใช้ compact typography
+- Dialog สำคัญต้องมี one-row header เท่าที่ทำได้
+- Mobile ต้องไม่ horizontal overflow แม้ workflow หลักจะเน้น desktop/internal staff
+- Search fields ควรมี clear action และคงพฤติกรรม reload current filter
 
-Dev login:
+## Dev Login
 
 - Code: `EMP001`
 - Password: `1234`

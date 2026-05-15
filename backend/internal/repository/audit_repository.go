@@ -82,7 +82,9 @@ func (r *AuditRepository) DocumentHistory(ctx context.Context, docNo string, lim
 	queryCtx, cancel := context.WithTimeout(ctx, r.cfg.DBQueryTimeout)
 	defer cancel()
 
-	docNo = strings.TrimSpace(docNo)
+	searchFilter := parseDocumentSearch(docNo)
+	searchPattern := searchFilter.search + "%"
+	rangeStarts, rangeEnds := searchFilter.rangeBounds()
 	rows, err := r.pool.Query(queryCtx, `
 		select
 			s.id,
@@ -105,10 +107,28 @@ func (r *AuditRepository) DocumentHistory(ctx context.Context, docNo string, lim
 			order by id desc
 			limit 1
 		) item on true
-		where ($1 = '' or s.original_doc_no = $1 or s.current_doc_no = $1)
+		where (
+			(not $1::boolean and ($2 = '' or s.original_doc_no ilike $3 or s.current_doc_no ilike $3))
+			or
+			($1::boolean and (
+				upper(s.original_doc_no) = any($4::text[])
+				or upper(coalesce(s.current_doc_no, '')) = any($4::text[])
+				or exists (
+					select 1
+					from unnest($5::text[], $6::text[]) as doc_range(start_doc_no, end_doc_no)
+					where (
+						upper(s.original_doc_no) >= doc_range.start_doc_no
+						and upper(s.original_doc_no) <= doc_range.end_doc_no
+					) or (
+						upper(coalesce(s.current_doc_no, '')) >= doc_range.start_doc_no
+						and upper(coalesce(s.current_doc_no, '')) <= doc_range.end_doc_no
+					)
+				)
+			))
+		)
 		order by s.id desc
-		limit $2
-	`, docNo, limit)
+		limit $7
+	`, searchFilter.advanced, searchFilter.search, searchPattern, searchFilter.exactDocNos, rangeStarts, rangeEnds, limit)
 	if err != nil {
 		return nil, fmt.Errorf("query document history: %w", err)
 	}

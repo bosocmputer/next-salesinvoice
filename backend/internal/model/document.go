@@ -136,6 +136,7 @@ type BulkDocumentChangeResult struct {
 	BlockedCount int                      `json:"blockedCount"`
 	AppliedCount int                      `json:"appliedCount"`
 	FailedCount  int                      `json:"failedCount"`
+	SkippedCount int                      `json:"skippedCount"`
 }
 
 type RollbackDocumentRequest struct {

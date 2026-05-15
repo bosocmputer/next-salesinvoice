@@ -3,10 +3,12 @@ package repository
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -18,6 +20,22 @@ import (
 
 const salesTransFlag = 44
 
+type duplicateDocumentNumberError struct {
+	docNo string
+	err   error
+}
+
+func (e duplicateDocumentNumberError) Error() string {
+	if e.docNo == "" {
+		return "เลขบิลใหม่ถูกใช้แล้ว กรุณากดตรวจสอบใหม่เพื่อออกเลขชุดใหม่"
+	}
+	return fmt.Sprintf("เลขบิลใหม่ %s ถูกใช้แล้ว กรุณากดตรวจสอบใหม่เพื่อออกเลขชุดใหม่", e.docNo)
+}
+
+func (e duplicateDocumentNumberError) Unwrap() error {
+	return e.err
+}
+
 type DocumentRepository struct {
 	pool *pgxpool.Pool
 	cfg  config.Config
@@ -27,12 +45,122 @@ func NewDocumentRepository(pool *pgxpool.Pool, cfg config.Config) *DocumentRepos
 	return &DocumentRepository{pool: pool, cfg: cfg}
 }
 
+type documentSearchRange struct {
+	start string
+	end   string
+}
+
+type documentSearchFilter struct {
+	search      string
+	advanced    bool
+	exactDocNos []string
+	ranges      []documentSearchRange
+}
+
+type documentNoParts struct {
+	docNo  string
+	prefix string
+	number string
+}
+
+func parseDocumentSearch(search string) documentSearchFilter {
+	search = strings.TrimSpace(search)
+	filter := documentSearchFilter{search: search}
+	if search == "" {
+		return filter
+	}
+
+	tokens := strings.FieldsFunc(search, func(r rune) bool {
+		return r == ',' || unicode.IsSpace(r)
+	})
+	if len(tokens) == 0 {
+		return filter
+	}
+	if len(tokens) == 1 && !strings.Contains(search, ",") && !strings.Contains(search, ":") {
+		return filter
+	}
+
+	exactSet := make(map[string]struct{})
+	for _, token := range tokens {
+		token = strings.TrimSpace(token)
+		if token == "" {
+			continue
+		}
+
+		if strings.Contains(token, ":") {
+			parts := strings.Split(token, ":")
+			if len(parts) != 2 {
+				return documentSearchFilter{search: search}
+			}
+			start, ok := splitDocumentNoParts(parts[0])
+			if !ok {
+				return documentSearchFilter{search: search}
+			}
+			end, ok := splitDocumentNoParts(parts[1])
+			if !ok || start.prefix != end.prefix || len(start.number) != len(end.number) {
+				return documentSearchFilter{search: search}
+			}
+			rangeStart, rangeEnd := start.docNo, end.docNo
+			if rangeStart > rangeEnd {
+				rangeStart, rangeEnd = rangeEnd, rangeStart
+			}
+			filter.ranges = append(filter.ranges, documentSearchRange{start: rangeStart, end: rangeEnd})
+			continue
+		}
+
+		docNo, ok := splitDocumentNoParts(token)
+		if !ok {
+			return documentSearchFilter{search: search}
+		}
+		if _, exists := exactSet[docNo.docNo]; !exists {
+			filter.exactDocNos = append(filter.exactDocNos, docNo.docNo)
+			exactSet[docNo.docNo] = struct{}{}
+		}
+	}
+
+	if len(filter.exactDocNos) > 0 || len(filter.ranges) > 0 {
+		filter.advanced = true
+	}
+	return filter
+}
+
+func splitDocumentNoParts(value string) (documentNoParts, bool) {
+	docNo := strings.ToUpper(strings.TrimSpace(value))
+	if docNo == "" {
+		return documentNoParts{}, false
+	}
+
+	split := len(docNo)
+	for split > 0 && docNo[split-1] >= '0' && docNo[split-1] <= '9' {
+		split--
+	}
+	if split == len(docNo) {
+		return documentNoParts{}, false
+	}
+	return documentNoParts{
+		docNo:  docNo,
+		prefix: docNo[:split],
+		number: docNo[split:],
+	}, true
+}
+
+func (filter documentSearchFilter) rangeBounds() ([]string, []string) {
+	starts := make([]string, 0, len(filter.ranges))
+	ends := make([]string, 0, len(filter.ranges))
+	for _, item := range filter.ranges {
+		starts = append(starts, item.start)
+		ends = append(ends, item.end)
+	}
+	return starts, ends
+}
+
 func (r *DocumentRepository) List(ctx context.Context, from, to time.Time, page, pageSize int, search string) ([]model.DocumentSummary, bool, error) {
 	queryCtx, cancel := context.WithTimeout(ctx, r.cfg.DBQueryTimeout)
 	defer cancel()
 
-	search = strings.TrimSpace(search)
-	searchPattern := search + "%"
+	searchFilter := parseDocumentSearch(search)
+	searchPattern := searchFilter.search + "%"
+	rangeStarts, rangeEnds := searchFilter.rangeBounds()
 	offset := (page - 1) * pageSize
 	rows, err := r.pool.Query(queryCtx, `
 		select
@@ -99,10 +227,22 @@ func (r *DocumentRepository) List(ctx context.Context, from, to time.Time, page,
 		where trans_flag = $1
 			and doc_date >= $2
 			and doc_date <= $3
-			and ($6 = '' or ic_trans.doc_no ilike $7 or cust_code ilike $7 or remark ilike $7)
+			and (
+				(not $6::boolean and ($7 = '' or ic_trans.doc_no ilike $8 or cust_code ilike $8 or remark ilike $8))
+				or
+				($6::boolean and (
+					upper(ic_trans.doc_no) = any($9::text[])
+					or exists (
+						select 1
+						from unnest($10::text[], $11::text[]) as doc_range(start_doc_no, end_doc_no)
+						where upper(ic_trans.doc_no) >= doc_range.start_doc_no
+							and upper(ic_trans.doc_no) <= doc_range.end_doc_no
+					)
+				))
+			)
 		order by ic_trans.doc_date desc, ic_trans.doc_no desc
 		limit $4 offset $5
-	`, salesTransFlag, from, to, pageSize+1, offset, search, searchPattern)
+	`, salesTransFlag, from, to, pageSize+1, offset, searchFilter.advanced, searchFilter.search, searchPattern, searchFilter.exactDocNos, rangeStarts, rangeEnds)
 	if err != nil {
 		return nil, false, fmt.Errorf("query documents: %w", err)
 	}
@@ -162,18 +302,31 @@ func (r *DocumentRepository) ListDocNos(ctx context.Context, from, to time.Time,
 	queryCtx, cancel := context.WithTimeout(ctx, r.cfg.DBQueryTimeout)
 	defer cancel()
 
-	search = strings.TrimSpace(search)
-	searchPattern := search + "%"
+	searchFilter := parseDocumentSearch(search)
+	searchPattern := searchFilter.search + "%"
+	rangeStarts, rangeEnds := searchFilter.rangeBounds()
 	rows, err := r.pool.Query(queryCtx, `
 		select doc_no
 		from ic_trans
 		where trans_flag = $1
 			and doc_date >= $2
 			and doc_date <= $3
-			and ($4 = '' or doc_no ilike $5 or cust_code ilike $5 or remark ilike $5)
+			and (
+				(not $4::boolean and ($5 = '' or doc_no ilike $6 or cust_code ilike $6 or remark ilike $6))
+				or
+				($4::boolean and (
+					upper(doc_no) = any($7::text[])
+					or exists (
+						select 1
+						from unnest($8::text[], $9::text[]) as doc_range(start_doc_no, end_doc_no)
+						where upper(doc_no) >= doc_range.start_doc_no
+							and upper(doc_no) <= doc_range.end_doc_no
+					)
+				))
+			)
 		order by doc_date desc, doc_no desc
-		limit $6
-	`, salesTransFlag, from, to, search, searchPattern, limit+1)
+		limit $10
+	`, salesTransFlag, from, to, searchFilter.advanced, searchFilter.search, searchPattern, searchFilter.exactDocNos, rangeStarts, rangeEnds, limit+1)
 	if err != nil {
 		return nil, false, fmt.Errorf("query selectable document numbers: %w", err)
 	}
@@ -342,6 +495,9 @@ func (r *DocumentRepository) ApplyChange(ctx context.Context, docNo string, req 
 			tax_type = $6::smallint
 		where trans_flag = $1 and doc_no = $2
 	`, salesTransFlag, docNo, req.NewDocNo, req.CustomerCode, req.InquiryType, req.VatType); err != nil {
+		if normalized := normalizeDocumentWriteError(err, req.NewDocNo); normalized != nil {
+			return model.DocumentChangePreview{}, normalized
+		}
 		return model.DocumentChangePreview{}, fmt.Errorf("update document detail headers: %w", err)
 	}
 	if _, err := tx.Exec(queryCtx, `
@@ -360,6 +516,9 @@ func (r *DocumentRepository) ApplyChange(ctx context.Context, docNo string, req 
 		where trans_flag = $1 and doc_no = $2
 	`, salesTransFlag, docNo, req.NewDocNo, req.DocFormatCode, req.CustomerCode, req.InquiryType, req.VatType, req.Remark,
 		totals.TotalValue, totals.TotalBeforeVat, totals.TotalVatValue, totals.TotalDiscount, totals.TotalAmount); err != nil {
+		if normalized := normalizeDocumentWriteError(err, req.NewDocNo); normalized != nil {
+			return model.DocumentChangePreview{}, normalized
+		}
 		return model.DocumentChangePreview{}, fmt.Errorf("update document header: %w", err)
 	}
 
@@ -477,8 +636,31 @@ func (r *DocumentRepository) BulkPreviewChange(ctx context.Context, req model.Bu
 	if len(req.DocNos) > 300 {
 		return model.BulkDocumentChangeResult{}, fmt.Errorf("bulk preview supports up to 300 documents per run")
 	}
+	if err := r.validateBulkChangeBase(queryCtx, r.pool, req); err != nil {
+		return model.BulkDocumentChangeResult{}, err
+	}
 
 	nextDocNos, err := r.nextDocNoSequence(queryCtx, req.DocFormatCode, len(req.DocNos))
+	if err != nil {
+		return model.BulkDocumentChangeResult{}, err
+	}
+	summaries, err := r.summariesByDocNo(queryCtx, r.pool, req.DocNos)
+	if err != nil {
+		return model.BulkDocumentChangeResult{}, err
+	}
+	existingNewDocNos, err := r.existingDocumentNumberSet(queryCtx, r.pool, nextDocNos)
+	if err != nil {
+		return model.BulkDocumentChangeResult{}, err
+	}
+	removeHitsByDocNo, err := r.existingRemoveCodesByDocNo(queryCtx, r.pool, req.DocNos, req.RemoveItemCodes)
+	if err != nil {
+		return model.BulkDocumentChangeResult{}, err
+	}
+	detailsByDocNo, err := r.detailLinesByDocNo(queryCtx, r.pool, req.DocNos)
+	if err != nil {
+		return model.BulkDocumentChangeResult{}, err
+	}
+	totalsByDocNo, err := r.calculateTotalsByDocNo(queryCtx, r.pool, req.DocNos, req.RemoveItemCodes)
 	if err != nil {
 		return model.BulkDocumentChangeResult{}, err
 	}
@@ -500,15 +682,32 @@ func (r *DocumentRepository) BulkPreviewChange(ctx context.Context, req model.Bu
 		}
 		reserved[newDocNo] = struct{}{}
 
-		removeHits, err := r.existingRemoveCodes(queryCtx, r.pool, docNo, req.RemoveItemCodes)
-		if err != nil {
+		if _, exists := existingNewDocNos[newDocNo]; exists && newDocNo != docNo {
 			item.Status = "blocked"
-			item.Message = err.Error()
+			item.Message = duplicateDocumentNumberError{docNo: newDocNo}.Error()
 			result.BlockedCount++
 			result.Items = append(result.Items, item)
 			continue
 		}
 
+		before, exists := summaries[docNo]
+		if !exists {
+			item.Status = "blocked"
+			item.Message = "ไม่พบบิลในระบบ"
+			result.BlockedCount++
+			result.Items = append(result.Items, item)
+			continue
+		}
+
+		removeHits := removeHitsByDocNo[docNo]
+		if removeHits == nil {
+			removeHits = []string{}
+		}
+		removed, remaining := splitPreviewDetailLines(detailsByDocNo[docNo], removeHits)
+		totals, exists := totalsByDocNo[docNo]
+		if !exists {
+			totals = zeroDocumentTotals()
+		}
 		changeReq := model.DocumentChangeRequest{
 			DocFormatCode:   req.DocFormatCode,
 			NewDocNo:        newDocNo,
@@ -518,8 +717,8 @@ func (r *DocumentRepository) BulkPreviewChange(ctx context.Context, req model.Bu
 			Remark:          req.Remark,
 			RemoveItemCodes: removeHits,
 		}
-		preview, err := r.PreviewChange(queryCtx, docNo, changeReq)
-		if err != nil {
+		preview := buildChangePreviewFromFetched(before, changeReq, totals, removed, remaining)
+		if err := ensureDocumentHasLines(preview.Totals); err != nil {
 			item.Status = "blocked"
 			item.Message = err.Error()
 			result.BlockedCount++
@@ -599,6 +798,10 @@ func (r *DocumentRepository) BulkApplyChange(ctx context.Context, req model.Bulk
 			result.FailedCount++
 			_ = r.releaseDocumentLock(ctx, item.DocNo)
 			_ = r.insertReflowBatchItem(ctx, batchID, *item)
+			if isDuplicateDocumentNumberError(err) {
+				result.SkippedCount += r.skipRemainingBulkItems(ctx, batchID, result.Items[i+1:], "หยุดบันทึกบิลที่เหลือ เพราะเลขบิลใหม่ซ้ำกับ SML กรุณากดตรวจสอบใหม่เพื่อออกเลขชุดใหม่")
+				break
+			}
 			continue
 		}
 		item.Status = "applied"
@@ -612,6 +815,22 @@ func (r *DocumentRepository) BulkApplyChange(ctx context.Context, req model.Bulk
 	}
 	_ = r.finishReflowBatch(ctx, batchID, result)
 	return result, nil
+}
+
+func (r *DocumentRepository) skipRemainingBulkItems(ctx context.Context, batchID int64, items []model.BulkDocumentChangeItem, message string) int {
+	skipped := 0
+	for i := range items {
+		item := &items[i]
+		if item.Status == "blocked" {
+			continue
+		}
+		item.Status = "skipped"
+		item.Message = message
+		item.Preview = nil
+		skipped++
+		_ = r.insertReflowBatchItem(ctx, batchID, *item)
+	}
+	return skipped
 }
 
 func (r *DocumentRepository) RollbackDocument(ctx context.Context, req model.RollbackDocumentRequest, userCode string) (model.RollbackDocumentResult, error) {
@@ -1206,6 +1425,126 @@ func (r *DocumentRepository) existingRemoveCodes(ctx context.Context, q document
 	return found, nil
 }
 
+func (r *DocumentRepository) validateBulkChangeBase(ctx context.Context, q documentQuerier, req model.BulkDocumentChangeRequest) error {
+	if req.DocFormatCode == "" {
+		return fmt.Errorf("doc format is required")
+	}
+	if req.CustomerCode == "" {
+		return fmt.Errorf("customer is required")
+	}
+	if req.InquiryType < 1 || req.InquiryType > 4 {
+		return fmt.Errorf("sale type is invalid")
+	}
+	if req.VatType < 0 || req.VatType > 3 {
+		return fmt.Errorf("tax type is invalid")
+	}
+
+	var exists bool
+	if err := q.QueryRow(ctx, `
+		select exists(select 1 from erp_doc_format where screen_code = 'SI' and code = $1)
+	`, req.DocFormatCode).Scan(&exists); err != nil {
+		return fmt.Errorf("validate doc format: %w", err)
+	}
+	if !exists {
+		return fmt.Errorf("doc format not found")
+	}
+	if err := q.QueryRow(ctx, `
+		select exists(select 1 from ar_customer where code = $1)
+	`, req.CustomerCode).Scan(&exists); err != nil {
+		return fmt.Errorf("validate customer: %w", err)
+	}
+	if !exists {
+		return fmt.Errorf("customer not found")
+	}
+	return nil
+}
+
+func (r *DocumentRepository) summariesByDocNo(ctx context.Context, q documentQuerier, docNos []string) (map[string]model.DocumentSummary, error) {
+	items := make(map[string]model.DocumentSummary, len(docNos))
+	if len(docNos) == 0 {
+		return items, nil
+	}
+	rows, err := q.Query(ctx, summarySQL(`
+		where trans_flag = $1 and doc_no = any($2)
+	`), salesTransFlag, docNos)
+	if err != nil {
+		return nil, fmt.Errorf("query document summaries: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		item, err := r.scanSummary(rows)
+		if err != nil {
+			return nil, err
+		}
+		items[item.DocNo] = item
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate document summaries: %w", err)
+	}
+	return items, nil
+}
+
+func (r *DocumentRepository) existingDocumentNumberSet(ctx context.Context, q documentQuerier, docNos []string) (map[string]struct{}, error) {
+	items := make(map[string]struct{}, len(docNos))
+	if len(docNos) == 0 {
+		return items, nil
+	}
+	rows, err := q.Query(ctx, `
+		select doc_no
+		from ic_trans
+		where trans_flag = $1
+			and doc_no = any($2)
+	`, salesTransFlag, docNos)
+	if err != nil {
+		return nil, fmt.Errorf("validate new document numbers: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var docNo string
+		if err := rows.Scan(&docNo); err != nil {
+			return nil, fmt.Errorf("scan existing document number: %w", err)
+		}
+		items[docNo] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate existing document numbers: %w", err)
+	}
+	return items, nil
+}
+
+func (r *DocumentRepository) existingRemoveCodesByDocNo(ctx context.Context, q documentQuerier, docNos []string, requested []string) (map[string][]string, error) {
+	items := make(map[string][]string, len(docNos))
+	if len(docNos) == 0 || len(requested) == 0 {
+		return items, nil
+	}
+	rows, err := q.Query(ctx, `
+		select distinct doc_no, item_code
+		from ic_trans_detail
+		where trans_flag = $1
+			and doc_no = any($2)
+			and item_code = any($3)
+		order by doc_no, item_code
+	`, salesTransFlag, docNos, requested)
+	if err != nil {
+		return nil, fmt.Errorf("check remove items: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var docNo, itemCode string
+		if err := rows.Scan(&docNo, &itemCode); err != nil {
+			return nil, fmt.Errorf("scan remove item hit: %w", err)
+		}
+		items[docNo] = append(items[docNo], itemCode)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate remove item hits: %w", err)
+	}
+	return items, nil
+}
+
 func (r *DocumentRepository) validateChangeRequest(ctx context.Context, q documentQuerier, docNo string, req model.DocumentChangeRequest) error {
 	if req.DocFormatCode == "" {
 		return fmt.Errorf("doc format is required")
@@ -1246,7 +1585,7 @@ func (r *DocumentRepository) validateChangeRequest(ctx context.Context, q docume
 			return fmt.Errorf("validate new document number: %w", err)
 		}
 		if exists {
-			return fmt.Errorf("new document number already exists")
+			return duplicateDocumentNumberError{docNo: req.NewDocNo}
 		}
 	}
 	if len(req.RemoveItemCodes) > 0 {
@@ -1316,6 +1655,30 @@ func (r *DocumentRepository) buildChangePreview(ctx context.Context, q documentQ
 	}, nil
 }
 
+func buildChangePreviewFromFetched(before model.DocumentSummary, req model.DocumentChangeRequest, totals model.DocumentTotals, removed []model.DocumentDetailLine, remaining []model.DocumentDetailLine) model.DocumentChangePreview {
+	after := before
+	after.DocNo = req.NewDocNo
+	after.DocFormatCode = req.DocFormatCode
+	after.CustomerCode = req.CustomerCode
+	after.InquiryType = req.InquiryType
+	after.VatType = req.VatType
+	after.Remark = req.Remark
+	after.TotalValue = totals.TotalValue
+	after.TotalBeforeVat = totals.TotalBeforeVat
+	after.TotalVatValue = totals.TotalVatValue
+	after.TotalDiscount = totals.TotalDiscount
+	after.TotalAmount = totals.TotalAmount
+	return model.DocumentChangePreview{
+		DocNo:           before.DocNo,
+		Before:          before,
+		After:           after,
+		Totals:          totals,
+		RemoveItemCodes: req.RemoveItemCodes,
+		RemovedLines:    removed,
+		RemainingLines:  remaining,
+	}
+}
+
 func (r *DocumentRepository) getSummary(ctx context.Context, q documentQuerier, docNo string) (model.DocumentSummary, error) {
 	return r.scanSummary(q.QueryRow(ctx, summarySQL(`
 		where trans_flag = $1 and doc_no = $2
@@ -1365,7 +1728,7 @@ func summarySQL(suffix string) string {
 	` + suffix
 }
 
-func (r *DocumentRepository) scanSummary(row pgx.Row) (model.DocumentSummary, error) {
+func (r *DocumentRepository) scanSummary(row interface{ Scan(...any) error }) (model.DocumentSummary, error) {
 	var item model.DocumentSummary
 	if err := row.Scan(
 		&item.DocNo,
@@ -1430,6 +1793,53 @@ func (r *DocumentRepository) calculateTotals(ctx context.Context, q documentQuer
 	return totals, nil
 }
 
+func (r *DocumentRepository) calculateTotalsByDocNo(ctx context.Context, q documentQuerier, docNos []string, excludeItemCodes []string) (map[string]model.DocumentTotals, error) {
+	items := make(map[string]model.DocumentTotals, len(docNos))
+	if len(docNos) == 0 {
+		return items, nil
+	}
+	rows, err := q.Query(ctx, `
+		select
+			doc_no,
+			coalesce(sum(sum_amount), 0)::text,
+			coalesce(sum(sum_amount_exclude_vat), 0)::text,
+			coalesce(sum(total_vat_value), 0)::text,
+			0::numeric::text,
+			(coalesce(sum(sum_amount), 0) + coalesce(sum(total_vat_value), 0))::text,
+			count(*)::bigint
+		from ic_trans_detail
+		where trans_flag = $1
+			and doc_no = any($2)
+			and (coalesce(cardinality($3::text[]), 0) = 0 or item_code <> all($3::text[]))
+		group by doc_no
+	`, salesTransFlag, docNos, excludeItemCodes)
+	if err != nil {
+		return nil, fmt.Errorf("calculate bulk document totals: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var docNo string
+		var totals model.DocumentTotals
+		if err := rows.Scan(
+			&docNo,
+			&totals.TotalValue,
+			&totals.TotalBeforeVat,
+			&totals.TotalVatValue,
+			&totals.TotalDiscount,
+			&totals.TotalAmount,
+			&totals.LineCount,
+		); err != nil {
+			return nil, fmt.Errorf("scan bulk document totals: %w", err)
+		}
+		items[docNo] = totals
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate bulk document totals: %w", err)
+	}
+	return items, nil
+}
+
 func (r *DocumentRepository) detailLines(ctx context.Context, q documentQuerier, docNo string, itemCodes []string, include bool) ([]model.DocumentDetailLine, error) {
 	condition := "and (coalesce(cardinality($3::text[]), 0) = 0 or item_code <> all($3::text[]))"
 	if include {
@@ -1466,6 +1876,70 @@ func (r *DocumentRepository) detailLines(ctx context.Context, q documentQuerier,
 	return scanDetailLines(rows)
 }
 
+func (r *DocumentRepository) detailLinesByDocNo(ctx context.Context, q documentQuerier, docNos []string) (map[string][]model.DocumentDetailLine, error) {
+	items := make(map[string][]model.DocumentDetailLine, len(docNos))
+	if len(docNos) == 0 {
+		return items, nil
+	}
+	rows, err := q.Query(ctx, `
+		select
+			doc_no,
+			coalesce(line_number, 0),
+			coalesce(item_code, ''),
+			coalesce(item_name, ''),
+			coalesce(barcode, ''),
+			coalesce(wh_code, ''),
+			coalesce(shelf_code, ''),
+			coalesce(unit_code, ''),
+			coalesce(qty, 0)::text,
+			coalesce(price, 0)::text,
+			coalesce(discount, ''),
+			coalesce(sum_amount, 0)::text,
+			coalesce(total_vat_value, 0)::text,
+			coalesce(sum_amount_exclude_vat, 0)::text,
+			coalesce(vat_type, 0),
+			coalesce(tax_type, 0)
+		from ic_trans_detail
+		where trans_flag = $1
+			and doc_no = any($2)
+		order by doc_no, line_number, roworder
+	`, salesTransFlag, docNos)
+	if err != nil {
+		return nil, fmt.Errorf("query bulk document detail lines: %w", err)
+	}
+	defer rows.Close()
+
+	lines, err := scanDetailLines(rows)
+	if err != nil {
+		return nil, err
+	}
+	for _, line := range lines {
+		items[line.DocNo] = append(items[line.DocNo], line)
+	}
+	return items, nil
+}
+
+func splitPreviewDetailLines(lines []model.DocumentDetailLine, removeCodes []string) ([]model.DocumentDetailLine, []model.DocumentDetailLine) {
+	removed := make([]model.DocumentDetailLine, 0)
+	remaining := make([]model.DocumentDetailLine, 0, len(lines))
+	if len(removeCodes) == 0 {
+		remaining = append(remaining, lines...)
+		return removed, remaining
+	}
+	removeSet := make(map[string]struct{}, len(removeCodes))
+	for _, code := range removeCodes {
+		removeSet[code] = struct{}{}
+	}
+	for _, line := range lines {
+		if _, shouldRemove := removeSet[line.ItemCode]; shouldRemove {
+			removed = append(removed, line)
+			continue
+		}
+		remaining = append(remaining, line)
+	}
+	return removed, remaining
+}
+
 func scanDetailLines(rows pgx.Rows) ([]model.DocumentDetailLine, error) {
 	items := make([]model.DocumentDetailLine, 0)
 	for rows.Next() {
@@ -1495,11 +1969,40 @@ func scanDetailLines(rows pgx.Rows) ([]model.DocumentDetailLine, error) {
 	return items, rows.Err()
 }
 
+func zeroDocumentTotals() model.DocumentTotals {
+	return model.DocumentTotals{
+		TotalValue:     "0",
+		TotalBeforeVat: "0",
+		TotalVatValue:  "0",
+		TotalDiscount:  "0",
+		TotalAmount:    "0",
+	}
+}
+
 func ensureDocumentHasLines(totals model.DocumentTotals) error {
 	if totals.LineCount == 0 {
 		return fmt.Errorf("document must keep at least one detail line")
 	}
 	return nil
+}
+
+func normalizeDocumentWriteError(err error, newDocNo string) error {
+	if err == nil {
+		return nil
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		return duplicateDocumentNumberError{docNo: newDocNo, err: err}
+	}
+	if strings.Contains(err.Error(), "duplicate key value") && strings.Contains(err.Error(), "doc_no") {
+		return duplicateDocumentNumberError{docNo: newDocNo, err: err}
+	}
+	return nil
+}
+
+func isDuplicateDocumentNumberError(err error) bool {
+	var duplicateErr duplicateDocumentNumberError
+	return errors.As(err, &duplicateErr)
 }
 
 func previewNextDocNo(formatCode, format, latest string, now time.Time) string {
