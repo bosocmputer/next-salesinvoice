@@ -1,7 +1,9 @@
 package http
 
 import (
+	"encoding/json"
 	"errors"
+	"log"
 	nethttp "net/http"
 	"strconv"
 	"strings"
@@ -9,11 +11,13 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"next-salesinvoice/backend/internal/appruntime"
 	"next-salesinvoice/backend/internal/audit"
 	"next-salesinvoice/backend/internal/config"
 	"next-salesinvoice/backend/internal/errorcode"
+	"next-salesinvoice/backend/internal/metrics"
 	"next-salesinvoice/backend/internal/model"
 	"next-salesinvoice/backend/internal/response"
 	"next-salesinvoice/backend/internal/service"
@@ -36,10 +40,12 @@ func NewRouter(
 	}
 	deps := RouterDeps{cfg: cfg, state: state, sessions: sessions}
 	r := gin.New()
-	r.Use(gin.Logger(), deps.jsonRecovery(), deps.requestBodyLimit())
+	r.Use(deps.structuredLogger(), deps.metricsMiddleware(), deps.jsonRecovery(), deps.requestBodyLimit())
 	r.NoRoute(func(c *gin.Context) {
 		response.Error(c, nethttp.StatusNotFound, errorcode.NotFound, "not found", "route does not exist")
 	})
+
+	r.GET("/metrics", gin.WrapH(promhttp.Handler()))
 
 	api := r.Group("/api/v1")
 	api.GET("/health", deps.health)
@@ -66,6 +72,7 @@ func NewRouter(
 	api.GET("/master/tax-types", deps.authMiddleware(), deps.taxTypes)
 	api.GET("/audit-logs", deps.authMiddleware(), deps.requireRole("Admin"), deps.auditLogs)
 	api.GET("/audit-documents", deps.authMiddleware(), deps.requireRole("Admin"), deps.auditDocuments)
+	api.POST("/client-events", deps.clientEvents)
 
 	return r
 }
@@ -365,6 +372,47 @@ func (d RouterDeps) health(c *gin.Context) {
 	response.OK(c, nethttp.StatusOK, "ok", gin.H{"status": "healthy"})
 }
 
+// clientEvents accepts unauthenticated client telemetry pings. The payload is
+// strictly bounded (small JSON), tagged with the client IP, and written to the
+// structured log. Counters are incremented per event kind for Prometheus.
+func (d RouterDeps) clientEvents(c *gin.Context) {
+	var event struct {
+		Kind    string         `json:"kind"`
+		Message string         `json:"message"`
+		URL     string         `json:"url"`
+		UA      string         `json:"ua"`
+		TS      string         `json:"ts"`
+		Detail  map[string]any `json:"detail"`
+	}
+	c.Request.Body = nethttp.MaxBytesReader(c.Writer, c.Request.Body, 8*1024)
+	if err := c.ShouldBindJSON(&event); err != nil {
+		response.Error(c, nethttp.StatusBadRequest, errorcode.InvalidInput, "invalid event", "payload is invalid")
+		return
+	}
+	kind := event.Kind
+	switch kind {
+	case "error", "rejection", "vitals":
+	default:
+		kind = "unknown"
+	}
+	metrics.ClientEventsTotal.WithLabelValues(kind).Inc()
+	if len(event.Message) > 500 {
+		event.Message = event.Message[:500]
+	}
+	if b, err := json.Marshal(map[string]any{
+		"ts":      time.Now().UTC().Format(time.RFC3339Nano),
+		"level":   "warn",
+		"source":  "client",
+		"kind":    kind,
+		"message": event.Message,
+		"url":     event.URL,
+		"ip":      c.ClientIP(),
+	}); err == nil {
+		log.Println(string(b))
+	}
+	response.OK(c, nethttp.StatusOK, "ok", gin.H{})
+}
+
 func (d RouterDeps) readyz(c *gin.Context) {
 	status, err := d.state.Current().Migrator.Verify(c.Request.Context())
 	if err != nil {
@@ -411,17 +459,21 @@ func (d RouterDeps) login(c *gin.Context) {
 		UserAgent: c.Request.UserAgent(),
 	})
 	if errors.Is(err, service.ErrInvalidCredentials) {
+		metrics.LoginAttemptsTotal.WithLabelValues("invalid").Inc()
 		response.Error(c, nethttp.StatusUnauthorized, errorcode.InvalidCredentials, "invalid username or password", "login credentials are not valid")
 		return
 	}
 	if errors.Is(err, service.ErrUserInactive) {
+		metrics.LoginAttemptsTotal.WithLabelValues("forbidden").Inc()
 		response.Error(c, nethttp.StatusForbidden, errorcode.Forbidden, "user is not allowed to login", "user is inactive or disabled")
 		return
 	}
 	if err != nil {
+		metrics.LoginAttemptsTotal.WithLabelValues("error").Inc()
 		response.Error(c, nethttp.StatusInternalServerError, errorcode.DBConnection, "login failed", err.Error())
 		return
 	}
+	metrics.LoginAttemptsTotal.WithLabelValues("success").Inc()
 	maxAge := int(time.Until(time.Unix(result.ExpiresAt, 0)).Seconds())
 	setSessionCookie(c, d.cfg, result.Token, maxAge)
 	response.OK(c, nethttp.StatusOK, "login success", gin.H{
@@ -602,6 +654,7 @@ func (d RouterDeps) loginRateLimiter() gin.HandlerFunc {
 			b.lockedUntil = now.Add(lockoutPeriod)
 			retry := int(lockoutPeriod.Seconds())
 			mu.Unlock()
+			metrics.LoginAttemptsTotal.WithLabelValues("rate_limited").Inc()
 			c.Header("Retry-After", strconv.Itoa(retry))
 			response.Error(c, nethttp.StatusTooManyRequests, errorcode.Forbidden, "too many login attempts", "please wait before retrying")
 			c.Abort()
@@ -609,5 +662,54 @@ func (d RouterDeps) loginRateLimiter() gin.HandlerFunc {
 		}
 		mu.Unlock()
 		c.Next()
+	}
+}
+
+// metricsMiddleware records per-request Prometheus counters and a latency histogram.
+func (d RouterDeps) metricsMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		start := time.Now()
+		c.Next()
+		route := c.FullPath()
+		if route == "" {
+			route = "unmatched"
+		}
+		status := strconv.Itoa(c.Writer.Status())
+		metrics.HTTPRequestsTotal.WithLabelValues(c.Request.Method, route, status).Inc()
+		metrics.HTTPRequestDurationSeconds.WithLabelValues(c.Request.Method, route).Observe(time.Since(start).Seconds())
+	}
+}
+
+// structuredLogger emits one JSON log line per request. Replaces gin.Logger().
+func (d RouterDeps) structuredLogger() gin.HandlerFunc {
+	logger := log.New(gin.DefaultWriter, "", 0)
+	return func(c *gin.Context) {
+		start := time.Now()
+		c.Next()
+		route := c.FullPath()
+		if route == "" {
+			route = "unmatched"
+		}
+		entry := map[string]any{
+			"ts":         start.UTC().Format(time.RFC3339Nano),
+			"level":      "info",
+			"method":     c.Request.Method,
+			"path":       c.Request.URL.Path,
+			"route":      route,
+			"status":     c.Writer.Status(),
+			"latency_ms": float64(time.Since(start).Microseconds()) / 1000.0,
+			"ip":         c.ClientIP(),
+			"bytes":      c.Writer.Size(),
+		}
+		if ua := c.Request.UserAgent(); ua != "" {
+			entry["user_agent"] = ua
+		}
+		if errs := c.Errors.ByType(gin.ErrorTypePrivate); len(errs) > 0 {
+			entry["error"] = errs.String()
+			entry["level"] = "error"
+		}
+		if b, err := json.Marshal(entry); err == nil {
+			logger.Println(string(b))
+		}
 	}
 }
