@@ -521,6 +521,26 @@ function AppRoutes() {
   }, [location.pathname, routerNavigate]);
 
   useEffect(() => {
+    if (!user) return;
+    const idleLimitMs = 30 * 60 * 1000;
+    let timer = window.setTimeout(() => {
+      window.dispatchEvent(new Event(authExpiredEvent));
+    }, idleLimitMs);
+    const reset = () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        window.dispatchEvent(new Event(authExpiredEvent));
+      }, idleLimitMs);
+    };
+    const events: Array<keyof WindowEventMap> = ["mousemove", "keydown", "click", "touchstart", "scroll"];
+    events.forEach((event) => window.addEventListener(event, reset, { passive: true }));
+    return () => {
+      window.clearTimeout(timer);
+      events.forEach((event) => window.removeEventListener(event, reset));
+    };
+  }, [user]);
+
+  useEffect(() => {
     const legacyPage = window.location.hash.replace("#", "");
     if (!legacyPage) return;
     const legacyPath = legacyPathFromPage(legacyPage);
