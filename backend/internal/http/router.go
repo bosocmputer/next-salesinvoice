@@ -5,6 +5,7 @@ import (
 	nethttp "net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -42,9 +43,11 @@ func NewRouter(
 
 	api := r.Group("/api/v1")
 	api.GET("/health", deps.health)
+	api.GET("/healthz", deps.health)
+	api.GET("/readyz", deps.readyz)
 	api.GET("/system/database-status", deps.databaseStatus)
 	api.POST("/system/database-migrate", deps.authMiddleware(), deps.requireRole("Admin"), deps.databaseMigrate)
-	api.POST("/auth/login", deps.login)
+	api.POST("/auth/login", deps.loginRateLimiter(), deps.login)
 	api.POST("/auth/logout", deps.logout)
 	api.GET("/auth/me", deps.authMiddleware(), deps.me)
 	api.GET("/documents", deps.authMiddleware(), deps.documentsList)
@@ -362,6 +365,19 @@ func (d RouterDeps) health(c *gin.Context) {
 	response.OK(c, nethttp.StatusOK, "ok", gin.H{"status": "healthy"})
 }
 
+func (d RouterDeps) readyz(c *gin.Context) {
+	status, err := d.state.Current().Migrator.Verify(c.Request.Context())
+	if err != nil {
+		response.Error(c, nethttp.StatusServiceUnavailable, errorcode.DatabaseVerification, "not ready", err.Error())
+		return
+	}
+	if !status.Connected || !status.RequiredSMLReady || !status.AppSchemaReady {
+		response.Error(c, nethttp.StatusServiceUnavailable, errorcode.DatabaseVerification, "not ready", "database or schema not ready")
+		return
+	}
+	response.OK(c, nethttp.StatusOK, "ready", gin.H{"status": "ready"})
+}
+
 func (d RouterDeps) databaseStatus(c *gin.Context) {
 	status, err := d.state.Current().Migrator.Verify(c.Request.Context())
 	if err != nil {
@@ -533,4 +549,65 @@ func parseBoundedInt(raw string, fallback, minValue, maxValue int) int {
 		return maxValue
 	}
 	return value
+}
+
+// loginRateLimiter throttles authentication attempts per client IP.
+// Defaults to 5 attempts per minute and an additional 30s lockout when exceeded.
+func (d RouterDeps) loginRateLimiter() gin.HandlerFunc {
+	const (
+		windowDuration = time.Minute
+		maxAttempts    = 5
+		lockoutPeriod  = 30 * time.Second
+	)
+	type bucket struct {
+		windowStart time.Time
+		count       int
+		lockedUntil time.Time
+	}
+	var (
+		mu      sync.Mutex
+		buckets = make(map[string]*bucket)
+	)
+	return func(c *gin.Context) {
+		ip := c.ClientIP()
+		now := time.Now()
+		mu.Lock()
+		b, ok := buckets[ip]
+		if !ok {
+			b = &bucket{windowStart: now}
+			buckets[ip] = b
+		}
+		// opportunistic cleanup
+		if len(buckets) > 4096 {
+			for k, v := range buckets {
+				if now.Sub(v.windowStart) > 10*time.Minute && now.After(v.lockedUntil) {
+					delete(buckets, k)
+				}
+			}
+		}
+		if now.Before(b.lockedUntil) {
+			retry := int(b.lockedUntil.Sub(now).Seconds()) + 1
+			mu.Unlock()
+			c.Header("Retry-After", strconv.Itoa(retry))
+			response.Error(c, nethttp.StatusTooManyRequests, errorcode.Forbidden, "too many login attempts", "please wait before retrying")
+			c.Abort()
+			return
+		}
+		if now.Sub(b.windowStart) > windowDuration {
+			b.windowStart = now
+			b.count = 0
+		}
+		b.count++
+		if b.count > maxAttempts {
+			b.lockedUntil = now.Add(lockoutPeriod)
+			retry := int(lockoutPeriod.Seconds())
+			mu.Unlock()
+			c.Header("Retry-After", strconv.Itoa(retry))
+			response.Error(c, nethttp.StatusTooManyRequests, errorcode.Forbidden, "too many login attempts", "please wait before retrying")
+			c.Abort()
+			return
+		}
+		mu.Unlock()
+		c.Next()
+	}
 }

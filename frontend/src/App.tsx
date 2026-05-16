@@ -982,8 +982,8 @@ function InvoiceDetailDialog({
           <Stack spacing={1.5}>
             <Paper variant="outlined" sx={{ ...changedPaperSx(fieldChanged("remark")), p: 1.5 }}>
               <Typography color="text.secondary" variant="caption">หมายเหตุ</Typography>
-              <Typography sx={{ fontWeight: 700 }} variant="body2">{doc.remark || "ไม่มีหมายเหตุ"}</Typography>
-              {fieldChanged("remark") ? <Typography color="text.secondary" variant="caption">เดิม: {beforeDoc?.remark || "ไม่มีหมายเหตุ"}</Typography> : null}
+              <Typography sx={{ fontWeight: 700 }} variant="body2">{maskInternalRemark(doc.remark) || "ไม่มีหมายเหตุ"}</Typography>
+              {fieldChanged("remark") ? <Typography color="text.secondary" variant="caption">เดิม: {maskInternalRemark(beforeDoc?.remark || "") || "ไม่มีหมายเหตุ"}</Typography> : null}
             </Paper>
             <Box sx={{ display: "grid", gap: 1, gridTemplateColumns: { xs: "1fr", sm: "repeat(2, 1fr)", md: "repeat(4, 1fr)" } }}>
               <TotalLine changed={moneyChanged("vatRate")} label="อัตราภาษี" previousValue={beforeDoc ? formatMoney(beforeDoc.vatRate) : undefined} value={formatMoney(doc.vatRate)} />
@@ -1198,6 +1198,7 @@ function BulkInvoiceEditPage({ status, user }: { status: DatabaseStatus | null; 
   const [productSearching, setProductSearching] = useState(false);
   const [message, setMessage] = useState("");
   const [confirmApplyOpen, setConfirmApplyOpen] = useState(false);
+  const [confirmApplyText, setConfirmApplyText] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [previewing, setPreviewing] = useState(false);
   const [detailDocNo, setDetailDocNo] = useState("");
@@ -1264,8 +1265,8 @@ function BulkInvoiceEditPage({ status, user }: { status: DatabaseStatus | null; 
       minWidth: 160,
       flex: 1.4,
       renderCell: (params) => (
-        <Typography noWrap title={params.row.remark || "-"} variant="body2">
-          {params.row.remark || "-"}
+        <Typography noWrap title={maskInternalRemark(params.row.remark || "") || "-"} variant="body2">
+          {maskInternalRemark(params.row.remark || "") || "-"}
         </Typography>
       ),
     },
@@ -1511,6 +1512,7 @@ function BulkInvoiceEditPage({ status, user }: { status: DatabaseStatus | null; 
       setPreviewDialogDocNo(response.data.items.find((item) => item.status === "applied")?.docNo || response.data.items[0]?.docNo || "");
       await refreshDocumentsAfterApply(`ส่งเข้า SML สำเร็จ ${response.data.appliedCount} บิล${response.data.failedCount ? `, ส่งไม่สำเร็จ ${response.data.failedCount} บิล` : ""}${response.data.skippedCount ? `, ยังไม่ดำเนินการ ${response.data.skippedCount} บิล` : ""}`);
       setConfirmApplyOpen(false);
+      setConfirmApplyText("");
     } else {
       setMessage(response.error?.detail || response.message || "ส่งหลายบิลเข้า SML ไม่สำเร็จ");
     }
@@ -1529,7 +1531,7 @@ function BulkInvoiceEditPage({ status, user }: { status: DatabaseStatus | null; 
 	            <Typography component="h2" sx={{ fontWeight: 700 }} variant="h6">รายการบิล</Typography>
             <StatusBadge>{loading ? "กำลังโหลด" : `${items.length}${documents?.hasMore ? "+" : ""} บิลที่แสดง`}</StatusBadge>
           </Stack>
-          <Box sx={{ alignItems: "flex-start", display: "grid", gap: 1, gridTemplateColumns: { xs: "1fr", md: "150px 150px minmax(220px, 1fr) auto" }, minWidth: 0 }}>
+          <Box sx={{ alignItems: "flex-start", display: "grid", gap: 1, gridTemplateColumns: { xs: "1fr 1fr", lg: "150px 150px minmax(220px, 1fr) auto" }, minWidth: 0 }}>
             <TextField
               label="จากวันที่"
               onChange={(event) => { setFromDate(event.target.value); resetPreview(); }}
@@ -1550,6 +1552,7 @@ function BulkInvoiceEditPage({ status, user }: { status: DatabaseStatus | null; 
               onChange={(event) => setSearch(event.target.value)}
               placeholder="เลขบิล / รหัสลูกค้า / หมายเหตุ"
               size="small"
+              sx={{ gridColumn: { xs: "1 / -1", lg: "auto" } }}
               value={search}
               slotProps={{
                 input: {
@@ -1570,9 +1573,9 @@ function BulkInvoiceEditPage({ status, user }: { status: DatabaseStatus | null; 
                 },
               }}
             />
-            <Stack direction="row" spacing={1} sx={{ alignItems: "stretch" }}>
-              <AppButton disabled={loading} onClick={() => void loadDocuments()} size="small" sx={{ flex: { xs: 1, md: "0 0 auto" }, minHeight: 40, minWidth: { md: 112 } }} tone="primary">ค้นหา</AppButton>
-              <AppButton disabled={loading} onClick={() => void loadDocuments()} size="small" startIcon={<RefreshCw size={15} />} sx={{ flex: { xs: 1, md: "0 0 auto" }, minHeight: 40, minWidth: { md: 112 } }}>โหลดใหม่</AppButton>
+            <Stack direction="row" spacing={1} sx={{ alignItems: "stretch", gridColumn: { xs: "1 / -1", lg: "auto" } }}>
+              <AppButton disabled={loading} onClick={() => void loadDocuments()} size="small" sx={{ flex: { xs: 1, lg: "0 0 auto" }, minHeight: 40, minWidth: { lg: 112 } }} tone="primary">ค้นหา</AppButton>
+              <AppButton disabled={loading} onClick={() => void loadDocuments()} size="small" startIcon={<RefreshCw size={15} />} sx={{ flex: { xs: 1, lg: "0 0 auto" }, minHeight: 40, minWidth: { lg: 112 } }}>โหลดใหม่</AppButton>
             </Stack>
           </Box>
           {selectedDocNos.length ? (
@@ -1617,7 +1620,7 @@ function BulkInvoiceEditPage({ status, user }: { status: DatabaseStatus | null; 
                         <SummaryLine label="สถานะ" value={appStatusLabel(item.appStatus)} />
                       </Box>
                       <Typography color="text.secondary" sx={{ display: "-webkit-box", overflow: "hidden", WebkitBoxOrient: "vertical", WebkitLineClamp: 2 }} variant="body2">
-                        {item.remark || "-"}
+                        {maskInternalRemark(item.remark || "") || "-"}
                       </Typography>
                       <AppButton
                         fullWidth
@@ -2025,12 +2028,12 @@ function BulkInvoiceEditPage({ status, user }: { status: DatabaseStatus | null; 
       {confirmApplyOpen && preview ? (
         <RiskConfirmDialog
           busy={busy}
-          confirmDisabled={busy}
+          confirmDisabled={busy || confirmApplyText.trim() !== "ยืนยัน"}
           confirmLabel={busy ? "กำลังส่งเข้า SML" : "ยืนยันส่งเข้า SML"}
           detail={`ระบบจะเขียนข้อมูลจริงลง SML เฉพาะ ${writablePreviewCount} บิลที่ผ่านพรีวิว จากทั้งหมด ${preview.totalCount} บิล`}
           title="ยืนยันส่งเข้า SML"
           tone="danger"
-          onCancel={() => setConfirmApplyOpen(false)}
+          onCancel={() => { setConfirmApplyOpen(false); setConfirmApplyText(""); }}
           onConfirm={() => void applyBulk()}
         >
           <Box sx={{ display: "grid", gap: 1, gridTemplateColumns: { xs: "1fr", sm: "repeat(2, 1fr)" } }}>
@@ -2040,6 +2043,14 @@ function BulkInvoiceEditPage({ status, user }: { status: DatabaseStatus | null; 
             <SummaryLine label="ลูกหนี้ใหม่" value={selectedCustomer || "-"} />
             <SummaryLine label="สินค้าที่จะลบ" value={removeItemCodes.length ? removeItemCodes.join(", ") : "ไม่มี"} />
           </Box>
+          <TextField
+            autoFocus
+            label="พิมพ์คำว่า ยืนยัน เพื่อยืนยัน"
+            onChange={(event) => setConfirmApplyText(event.target.value)}
+            placeholder="ยืนยัน"
+            size="small"
+            value={confirmApplyText}
+          />
         </RiskConfirmDialog>
       ) : null}
     </Stack>
@@ -2189,9 +2200,9 @@ function BulkPreviewDialog({
                   <Stack spacing={1.5}>
                     <Paper variant="outlined" sx={{ ...changedPaperSx(valueChanged(selectedPreview.after.remark, selectedPreview.before.remark)), p: 1.25 }}>
                       <Typography color="text.secondary" variant="caption">หมายเหตุหลังแก้ไข</Typography>
-                      <Typography sx={{ fontWeight: 700 }} variant="body2">{selectedPreview.after.remark || "ไม่มีหมายเหตุ"}</Typography>
+                      <Typography sx={{ fontWeight: 700 }} variant="body2">{maskInternalRemark(selectedPreview.after.remark) || "ไม่มีหมายเหตุ"}</Typography>
                       {valueChanged(selectedPreview.after.remark, selectedPreview.before.remark) ? (
-                        <Typography color="text.secondary" sx={{ display: "block", mt: 0.25 }} variant="caption">เดิม: {selectedPreview.before.remark || "ไม่มีหมายเหตุ"}</Typography>
+                        <Typography color="text.secondary" sx={{ display: "block", mt: 0.25 }} variant="caption">เดิม: {maskInternalRemark(selectedPreview.before.remark) || "ไม่มีหมายเหตุ"}</Typography>
                       ) : null}
                     </Paper>
                     <Box sx={{ display: "grid", gap: 1, gridTemplateColumns: { xs: "1fr", sm: "repeat(2, 1fr)", md: "repeat(4, 1fr)" } }}>
@@ -3873,7 +3884,7 @@ function buildPreviewChangeItems(preview: DocumentChangePreview): PreviewChangeI
       taxTypeLabels[preview.after.vatType] || `${preview.after.vatType}`,
       valueChanged(preview.after.vatType, preview.before.vatType),
     ),
-    item("remark", "หมายเหตุ", preview.before.remark || "ไม่มีหมายเหตุ", preview.after.remark || "ไม่มีหมายเหตุ", valueChanged(preview.after.remark, preview.before.remark)),
+    item("remark", "หมายเหตุ", maskInternalRemark(preview.before.remark) || "ไม่มีหมายเหตุ", maskInternalRemark(preview.after.remark) || "ไม่มีหมายเหตุ", valueChanged(preview.after.remark, preview.before.remark)),
     item("totalAmount", "ยอดสุทธิ", formatMoney(preview.before.totalAmount), formatMoney(preview.totals.totalAmount), moneyValueChanged(preview.totals.totalAmount, preview.before.totalAmount)),
     item("lineCount", "สินค้าในบิล", `${beforeLineCount} รายการ`, `${afterLineCount} รายการ`, preview.removedLines.length > 0 || beforeLineCount !== afterLineCount, "danger"),
   ];
@@ -4038,6 +4049,18 @@ function documentLineFromRawState(raw: Record<string, unknown>, index: number): 
     sumAmount: rawText(raw, ["sumAmount", "sum_amount"]),
     totalVatValue: rawText(raw, ["totalVatValue", "total_vat_value"]),
   };
+}
+
+// Mask internal staging/test markers that leak from automated rollback/test flows.
+// Anything matching STAGING_*, REALWRITE_*, or ROLLBACK_<digits> is hidden from end users.
+function maskInternalRemark(value: string): string {
+  if (!value) return value;
+  const stripped = value
+    .split(/\s+/)
+    .filter((token) => !/^(STAGING|REALWRITE|ROLLBACK)[_A-Z0-9]*$/i.test(token))
+    .join(" ")
+    .trim();
+  return stripped;
 }
 
 function rawText(raw: Record<string, unknown>, keys: string[], fallback = "") {

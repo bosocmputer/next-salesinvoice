@@ -5,6 +5,8 @@ import (
 	"errors"
 	"strings"
 
+	"golang.org/x/crypto/bcrypt"
+
 	"next-salesinvoice/backend/internal/audit"
 	"next-salesinvoice/backend/internal/model"
 	"next-salesinvoice/backend/internal/repository"
@@ -112,9 +114,19 @@ func (s *AuthService) Login(ctx context.Context, code, password string, meta Aud
 }
 
 func passwordMatches(user model.ERPUser, password string) bool {
-	// Current SML dev database stores EMP001 as plain text password "1234".
-	// Keep this isolated so a hashed/custom SML verifier can replace it cleanly.
-	return user.Password != "" && hmacSafeEqual(user.Password, password)
+	if user.Password == "" {
+		return false
+	}
+	// If SML upgrades to bcrypt-style hashes ($2a$/$2b$/$2y$), verify via bcrypt.
+	if isBcryptHash(user.Password) {
+		return bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(password)) == nil
+	}
+	// Fallback: legacy plain-text comparison (current SML behaviour).
+	return hmacSafeEqual(user.Password, password)
+}
+
+func isBcryptHash(s string) bool {
+	return len(s) >= 60 && (strings.HasPrefix(s, "$2a$") || strings.HasPrefix(s, "$2b$") || strings.HasPrefix(s, "$2y$"))
 }
 
 func hmacSafeEqual(left, right string) bool {
