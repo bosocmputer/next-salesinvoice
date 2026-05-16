@@ -77,238 +77,86 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-
-type PageKey = "bulk" | "audit" | "status";
-type ApiResponse<T> = {
-  success: boolean;
-  message: string;
-  data: T | null;
-  error: { code: string; detail: string } | null;
-};
-
-type DatabaseStatus = {
-  connected: boolean;
-  database: string;
-  schema?: string;
-  requiredSmlReady: boolean;
-  appSchemaReady: boolean;
-  missingSmlTables?: string[];
-  missingAppTables?: string[];
-};
-
-type UserClaims = {
-  userCode: string;
-  displayName: string;
-  role: string;
-};
-
-type DocumentSummary = {
-  docNo: string;
-  docDate: string;
-  docTime: string;
-  taxDocNo: string;
-  taxDocDate: string;
-  docRef: string;
-  docRefDate: string;
-  customerCode: string;
-  contactor: string;
-  inquiryType: number;
-  vatType: number;
-  saleCode: string;
-  saleGroup: string;
-  creditDay: string;
-  creditDate: string;
-  sendDay: string;
-  sendDate: string;
-  vatRate: string;
-  totalValue: string;
-  totalBeforeVat: string;
-  totalAmount: string;
-  totalVatValue: string;
-  totalDiscount: string;
-  totalAfterVat: string;
-  totalExceptVat: string;
-  remark: string;
-  docFormatCode: string;
-  appStatus: "pending" | "processing" | "done" | "failed" | "rolled_back" | string;
-};
+import type {
+  ApiResponse,
+  AuditInvoiceDialogState,
+  AuditLogItem,
+  BulkDocumentChangeItem,
+  BulkDocumentChangeRequest,
+  BulkDocumentChangeResult,
+  BulkPreviewFilter,
+  DatabaseStatus,
+  DocFormat,
+  DocumentChangePreview,
+  DocumentDetailLine,
+  DocumentHistoryItem,
+  DocumentRawState,
+  DocumentSummary,
+  JsonDiffMap,
+  JsonDiffStatus,
+  LineChangeState,
+  Option,
+  PageKey,
+  PagedDocuments,
+  PreviewChangeItem,
+  ProductOption,
+  RollbackDocumentResult,
+  RunningData,
+  TechnicalJsonSection,
+  ToastTone,
+  UserClaims,
+} from "./types";
+import {
+  apiGet,
+  apiPost,
+  apiPut,
+  apiRequest,
+  authExpiredEvent,
+  authSessionKey,
+  friendlyErrorMap,
+  friendlyThaiError,
+} from "./lib/api";
+import {
+  appStatusLabel,
+  appStatusTone,
+  buildAuditInvoiceDialog,
+  buildPreviewChangeItems,
+  changedCellSx,
+  changedPaperSx,
+  countChangedDocumentFields,
+  documentCompareFields,
+  documentLineFromRawState,
+  documentSummaryFromRawState,
+  formatDate,
+  formatDateTime,
+  formatDocumentTime,
+  formatMoney,
+  formatSmlDate,
+  getLineChangeState,
+  getRemovedLines,
+  legacyPathFromPage,
+  lineCompareFields,
+  maskInternalRemark,
+  moneyValueChanged,
+  numericValue,
+  pageFromPath,
+  productLineMeta,
+  productLineTitle,
+  rawInt,
+  rawText,
+  saleTypeLabels,
+  taxTypeLabels,
+  titleFromPath,
+  valueChanged,
+} from "./lib/format";
 
 const LazyDataGrid = lazy(async () => {
   const module = await import("@mui/x-data-grid");
   return { default: module.DataGrid as ComponentType<DataGridProps<any>> };
 });
 
-type PagedDocuments = {
-  items: DocumentSummary[];
-  page: number;
-  pageSize: number;
-  total: number;
-  hasMore: boolean;
-};
-
-type DocFormat = {
-  code: string;
-  name: string;
-  format: string;
-};
-
-type Option = {
-  code: string;
-  name: string;
-};
-
-type ProductOption = Option & {
-  unitCode: string;
-};
-
-type DocumentDetailLine = {
-  lineNumber: number;
-  itemCode: string;
-  itemName: string;
-  barcode: string;
-  whCode: string;
-  shelfCode: string;
-  unitCode: string;
-  qty: string;
-  price: string;
-  discount: string;
-  sumAmount: string;
-  totalVatValue: string;
-};
-
-type RunningData = {
-  formatCode: string;
-  latestDocNo: string;
-  nextDocNo: string;
-};
-
-type DocumentChangePreview = {
-  docNo: string;
-  before: DocumentSummary;
-  after: DocumentSummary;
-  totals: {
-    totalValue: string;
-    totalVatValue: string;
-    totalAmount: string;
-    lineCount: number;
-  };
-  removedLines: DocumentDetailLine[];
-  remainingLines: DocumentDetailLine[];
-};
-
-type BulkDocumentChangeRequest = {
-  docNos: string[];
-  docFormatCode: string;
-  customerCode: string;
-  inquiryType: number;
-  vatType: number;
-  remark: string;
-  removeItemCodes: string[];
-};
-
-type BulkDocumentChangeItem = {
-  docNo: string;
-  newDocNo: string;
-  status: "ready" | "warning" | "blocked" | "applied" | "failed" | "skipped";
-  message: string;
-  preview: DocumentChangePreview | null;
-  removeHits: string[];
-};
-
-type BulkDocumentChangeResult = {
-  items: BulkDocumentChangeItem[];
-  totalCount: number;
-  readyCount: number;
-  warningCount: number;
-  blockedCount: number;
-  appliedCount: number;
-  failedCount: number;
-  skippedCount: number;
-};
-
-type PreviewChangeItem = {
-  key: string;
-  label: string;
-  before: string;
-  after: string;
-  changed: boolean;
-  tone?: "warning" | "danger";
-};
-
-type BulkPreviewFilter = "all" | "writable" | "blocked";
-
-type AuditLogItem = {
-  id: number;
-  userCode: string;
-  action: string;
-  resourceId: string;
-  beforeData: Record<string, unknown>;
-  afterData: Record<string, unknown>;
-  createdAt: string;
-};
-
-type DocumentRawState = {
-  icTrans: Record<string, unknown>;
-  icTransDetail: Array<Record<string, unknown>>;
-};
-
-type DocumentHistoryItem = {
-  snapshotId: number;
-  batchId: number;
-  originalDocNo: string;
-  currentDocNo: string;
-  createdBy: string;
-  createdAt: string;
-  rolledBackAt?: string;
-  before: DocumentRawState;
-  after: DocumentRawState;
-  afterSummary?: Record<string, unknown>;
-  status: string;
-  message: string;
-};
-
-type JsonDiffStatus = "changed" | "added" | "removed";
-type JsonDiffMap = Map<string, JsonDiffStatus>;
-type TechnicalJsonSection = {
-  diff: JsonDiffMap;
-  keyName: string;
-  label: string;
-  value: unknown;
-};
-
-type AuditInvoiceDialogState = {
-  doc: DocumentSummary;
-  lines: DocumentDetailLine[];
-  title: string;
-  comparison?: {
-    beforeDoc: DocumentSummary;
-    beforeLines: DocumentDetailLine[];
-  };
-};
-
-type RollbackDocumentResult = {
-  snapshotId: number;
-  restored: DocumentSummary;
-};
-
-const saleTypeLabels: Record<number, string> = {
-  1: "ขายเงินเชื่อ",
-  2: "ขายเงินสด",
-  3: "ขายสินค้าเงินเชื่อ (สินค้าบริการ)",
-  4: "ขายสินค้าเงินสด (สินค้าบริการ)",
-};
-
-const taxTypeLabels: Record<number, string> = {
-  0: "ภาษีแยกนอก",
-  1: "ภาษีรวมใน",
-  2: "ภาษีอัตราศูนย์",
-  3: "ไม่กระทบภาษี",
-};
-
 const initialFromDate = "2026-01-01";
 const initialToDate = "2026-12-31";
-const authSessionKey = "next-salesinvoice-authenticated";
-const authExpiredEvent = "next-salesinvoice-auth-expired";
 const drawerWidth = 260;
 const thaiGridLocaleText: NonNullable<DataGridProps<any>["localeText"]> = {
   noRowsLabel: "ไม่พบข้อมูล",
@@ -477,7 +325,6 @@ export default function App() {
   );
 }
 
-type ToastTone = "success" | "error" | "warning" | "info";
 type ToastState = { open: boolean; tone: ToastTone; message: string };
 const ToastContext = createContext<(message: string, tone?: ToastTone) => void>(() => undefined);
 
@@ -3850,435 +3697,3 @@ function getInitialReviewDocNo(items: BulkDocumentChangeItem[]) {
     || "";
 }
 
-function appStatusLabel(status: string) {
-  if (status === "audit_before") return "ข้อมูลเดิม";
-  if (status === "audit_after") return "ข้อมูลใหม่";
-  if (status === "processing") return "กำลังทำ";
-  if (status === "done") return "เสร็จแล้ว";
-  if (status === "failed") return "ผิดพลาด";
-  if (status === "rolled_back") return "ย้อนกลับแล้ว";
-  return "รอดำเนินการ";
-}
-
-function appStatusTone(status: string): "neutral" | "success" | "danger" {
-  if (status === "done" || status === "rolled_back") return "success";
-  if (status === "failed") return "danger";
-  return "neutral";
-}
-
-function pageFromPath(pathname: string): PageKey {
-  if (pathname.startsWith("/audit")) return "audit";
-  if (pathname.startsWith("/system/status")) return "status";
-  return "bulk";
-}
-
-function titleFromPath(pathname: string) {
-  if (pathname.includes("/edit")) return "แก้บิลที่เลือก";
-  if (pathname.startsWith("/bulk-edit")) return "แก้ไขบิล";
-  if (pathname.startsWith("/audit")) return "ประวัติและย้อนกลับ";
-  if (pathname.startsWith("/system/status")) return "ตรวจระบบ";
-  return "แก้ไขบิล";
-}
-
-function legacyPathFromPage(page: string) {
-  if (page === "invoices") return "/bulk-edit";
-  if (page === "edit") return "/bulk-edit";
-  if (page === "bulk") return "/bulk-edit";
-  if (page === "audit") return "/audit";
-  if (page === "status") return "/system/status";
-  return "";
-}
-
-function formatDate(value: string) {
-  return value ? value.slice(0, 10) : "-";
-}
-
-function formatSmlDate(value: string) {
-  if (!value) return "-";
-  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
-  if (!match) return value;
-  const [, year, month, day] = match;
-  const parsedYear = Number(year);
-  const displayYear = parsedYear < 2400 ? parsedYear + 543 : parsedYear;
-  return `${Number(day)}/${Number(month)}/${displayYear}`;
-}
-
-function formatDocumentTime(value: string) {
-  if (!value) return "-";
-  const match = /^(\d{1,2}):(\d{2})/.exec(value);
-  if (!match) return value;
-  return `${match[1].padStart(2, "0")}:${match[2]}`;
-}
-
-function formatDateTime(value: string) {
-  if (!value) return "-";
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return value;
-  return new Intl.DateTimeFormat("th-TH", { dateStyle: "short", timeStyle: "short" }).format(parsed);
-}
-
-function formatMoney(value: string) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) return value || "-";
-  return new Intl.NumberFormat("th-TH", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(parsed);
-}
-
-function changedPaperSx(changed: boolean, tone: "warning" | "success" = "warning") {
-  if (!changed) return {};
-  return {
-    bgcolor: tone === "success" ? "rgba(46, 125, 91, 0.10)" : "rgba(161, 98, 7, 0.10)",
-    borderColor: tone === "success" ? "success.main" : "warning.main",
-    borderRadius: 1,
-    borderStyle: "solid",
-    borderWidth: 1,
-    px: 1,
-    py: 0.5,
-  };
-}
-
-function changedCellSx(changed: boolean) {
-  if (!changed) return {};
-  return { bgcolor: "rgba(161, 98, 7, 0.10)" };
-}
-
-function normalizeCompareValue(value: unknown) {
-  return String(value ?? "").trim();
-}
-
-function valueChanged(current: unknown, previous: unknown) {
-  return normalizeCompareValue(current) !== normalizeCompareValue(previous);
-}
-
-function moneyValueChanged(current: unknown, previous: unknown) {
-  const currentNumber = Number(current || 0);
-  const previousNumber = Number(previous || 0);
-  if (Number.isFinite(currentNumber) && Number.isFinite(previousNumber)) return Math.abs(currentNumber - previousNumber) > 0.004;
-  return valueChanged(current, previous);
-}
-
-function buildPreviewChangeItems(preview: DocumentChangePreview): PreviewChangeItem[] {
-  const beforeLineCount = preview.remainingLines.length + preview.removedLines.length;
-  const afterLineCount = preview.totals.lineCount;
-  const item = (
-    key: string,
-    label: string,
-    before: string,
-    after: string,
-    changed: boolean,
-    tone: "warning" | "danger" = "warning",
-  ): PreviewChangeItem => ({ key, label, before: before || "-", after: after || "-", changed, tone });
-
-  return [
-    item("docNo", "เลขบิล", preview.before.docNo, preview.after.docNo, valueChanged(preview.after.docNo, preview.before.docNo)),
-    item("docFormatCode", "ชุดเลข", preview.before.docFormatCode || "-", preview.after.docFormatCode || "-", valueChanged(preview.after.docFormatCode, preview.before.docFormatCode)),
-    item("customerCode", "ลูกหนี้", preview.before.customerCode || "-", preview.after.customerCode || "-", valueChanged(preview.after.customerCode, preview.before.customerCode)),
-    item(
-      "inquiryType",
-      "ประเภทขาย",
-      saleTypeLabels[preview.before.inquiryType] || `${preview.before.inquiryType}`,
-      saleTypeLabels[preview.after.inquiryType] || `${preview.after.inquiryType}`,
-      valueChanged(preview.after.inquiryType, preview.before.inquiryType),
-    ),
-    item(
-      "vatType",
-      "ประเภทภาษี",
-      taxTypeLabels[preview.before.vatType] || `${preview.before.vatType}`,
-      taxTypeLabels[preview.after.vatType] || `${preview.after.vatType}`,
-      valueChanged(preview.after.vatType, preview.before.vatType),
-    ),
-    item("remark", "หมายเหตุ", maskInternalRemark(preview.before.remark) || "ไม่มีหมายเหตุ", maskInternalRemark(preview.after.remark) || "ไม่มีหมายเหตุ", valueChanged(preview.after.remark, preview.before.remark)),
-    item("totalAmount", "ยอดสุทธิ", formatMoney(preview.before.totalAmount), formatMoney(preview.totals.totalAmount), moneyValueChanged(preview.totals.totalAmount, preview.before.totalAmount)),
-    item("lineCount", "สินค้าในบิล", `${beforeLineCount} รายการ`, `${afterLineCount} รายการ`, preview.removedLines.length > 0 || beforeLineCount !== afterLineCount, "danger"),
-  ];
-}
-
-const documentCompareFields: Array<keyof DocumentSummary> = [
-  "docNo",
-  "docDate",
-  "docTime",
-  "docFormatCode",
-  "customerCode",
-  "contactor",
-  "taxDocNo",
-  "taxDocDate",
-  "docRef",
-  "docRefDate",
-  "inquiryType",
-  "vatType",
-  "remark",
-  "vatRate",
-  "totalValue",
-  "totalBeforeVat",
-  "totalAmount",
-  "totalVatValue",
-  "totalDiscount",
-  "totalAfterVat",
-  "totalExceptVat",
-];
-
-function countChangedDocumentFields(current: DocumentSummary, previous: DocumentSummary) {
-  return documentCompareFields.filter((field) => {
-    if (String(field).startsWith("total") || field === "vatRate") return moneyValueChanged(current[field], previous[field]);
-    return valueChanged(current[field], previous[field]);
-  }).length;
-}
-
-type LineChangeState = {
-  status: "same" | "changed" | "added";
-  previous?: DocumentDetailLine;
-  changedFields: Set<keyof DocumentDetailLine>;
-};
-
-const lineCompareFields: Array<keyof DocumentDetailLine> = [
-  "itemCode",
-  "itemName",
-  "whCode",
-  "shelfCode",
-  "unitCode",
-  "qty",
-  "price",
-  "discount",
-  "sumAmount",
-  "totalVatValue",
-];
-
-function getLineChangeState(line: DocumentDetailLine, index: number, compareLines?: DocumentDetailLine[]): LineChangeState {
-  if (!compareLines) return { status: "same", changedFields: new Set() };
-  const previous = findComparableLine(line, index, compareLines);
-  if (!previous) return { status: "added", changedFields: new Set(lineCompareFields) };
-  const changedFields = new Set<keyof DocumentDetailLine>();
-  lineCompareFields.forEach((field) => {
-    const changed = field === "qty" || field === "price" || field === "sumAmount" || field === "totalVatValue"
-      ? moneyValueChanged(line[field], previous[field])
-      : valueChanged(line[field], previous[field]);
-    if (changed) changedFields.add(field);
-  });
-  return { status: changedFields.size ? "changed" : "same", previous, changedFields };
-}
-
-function findComparableLine(line: DocumentDetailLine, index: number, compareLines: DocumentDetailLine[]) {
-  const code = line.itemCode.trim();
-  if (code) {
-    const sameCode = compareLines.filter((candidate) => candidate.itemCode.trim() === code);
-    if (sameCode.length === 1) return sameCode[0];
-    const sameStorage = sameCode.find((candidate) => candidate.whCode === line.whCode && candidate.shelfCode === line.shelfCode && candidate.unitCode === line.unitCode);
-    if (sameStorage) return sameStorage;
-    return undefined;
-  }
-  return compareLines[index];
-}
-
-function getRemovedLines(currentLines: DocumentDetailLine[], previousLines: DocumentDetailLine[]) {
-  return previousLines.filter((previous) => !currentLines.some((current) => sameLineIdentity(current, previous)));
-}
-
-function sameLineIdentity(current: DocumentDetailLine, previous: DocumentDetailLine) {
-  const currentCode = current.itemCode.trim();
-  const previousCode = previous.itemCode.trim();
-  if (currentCode && previousCode) return currentCode === previousCode;
-  return current.lineNumber === previous.lineNumber;
-}
-
-function productLineMeta(line: DocumentDetailLine) {
-  const details = [
-    line.barcode ? `บาร์โค้ด ${line.barcode}` : "",
-  ].filter(Boolean);
-  return details.join(" · ");
-}
-
-function productLineTitle(line: DocumentDetailLine, meta = productLineMeta(line)) {
-  return [line.itemCode, line.itemName, meta].filter(Boolean).join(" · ");
-}
-
-function buildAuditInvoiceDialog(item: DocumentHistoryItem, side: "before" | "after"): AuditInvoiceDialogState {
-  const beforeDoc = documentSummaryFromRawState(item.before.icTrans, item.originalDocNo, "audit_before");
-  const beforeLines = item.before.icTransDetail.map((line, index) => documentLineFromRawState(line, index));
-  const state = item[side];
-  const fallbackDocNo = side === "before" ? item.originalDocNo : item.currentDocNo || item.originalDocNo;
-  return {
-    doc: documentSummaryFromRawState(state.icTrans, fallbackDocNo, side === "before" ? "audit_before" : "audit_after"),
-    lines: state.icTransDetail.map((line, index) => documentLineFromRawState(line, index)),
-    comparison: side === "after" ? { beforeDoc, beforeLines } : undefined,
-    title: side === "before" ? "รายละเอียดบิล: ข้อมูลเดิม" : "รายละเอียดบิล: ข้อมูลใหม่",
-  };
-}
-
-function documentSummaryFromRawState(raw: Record<string, unknown>, fallbackDocNo: string, appStatus: string): DocumentSummary {
-  return {
-    docNo: rawText(raw, ["docNo", "doc_no"], fallbackDocNo),
-    docDate: rawText(raw, ["docDate", "doc_date"]),
-    docTime: rawText(raw, ["docTime", "doc_time"]),
-    taxDocNo: rawText(raw, ["taxDocNo", "tax_doc_no"]),
-    taxDocDate: rawText(raw, ["taxDocDate", "tax_doc_date"]),
-    docRef: rawText(raw, ["docRef", "doc_ref"]),
-    docRefDate: rawText(raw, ["docRefDate", "doc_ref_date"]),
-    customerCode: rawText(raw, ["customerCode", "cust_code", "ar_code"]),
-    contactor: rawText(raw, ["contactor"]),
-    inquiryType: rawInt(raw, ["inquiryType", "inquiry_type"]),
-    vatType: rawInt(raw, ["vatType", "vat_type"]),
-    saleCode: rawText(raw, ["saleCode", "sale_code"]),
-    saleGroup: rawText(raw, ["saleGroup", "sale_group"]),
-    creditDay: rawText(raw, ["creditDay", "credit_day"]),
-    creditDate: rawText(raw, ["creditDate", "credit_date"]),
-    sendDay: rawText(raw, ["sendDay", "send_day"]),
-    sendDate: rawText(raw, ["sendDate", "send_date"]),
-    vatRate: rawText(raw, ["vatRate", "vat_rate"]),
-    totalValue: rawText(raw, ["totalValue", "total_value"]),
-    totalBeforeVat: rawText(raw, ["totalBeforeVat", "total_before_vat"]),
-    totalAmount: rawText(raw, ["totalAmount", "total_amount"]),
-    totalVatValue: rawText(raw, ["totalVatValue", "total_vat_value"]),
-    totalDiscount: rawText(raw, ["totalDiscount", "total_discount"]),
-    totalAfterVat: rawText(raw, ["totalAfterVat", "total_after_vat"]),
-    totalExceptVat: rawText(raw, ["totalExceptVat", "total_except_vat"]),
-    remark: rawText(raw, ["remark"]),
-    docFormatCode: rawText(raw, ["docFormatCode", "doc_format_code"]),
-    appStatus,
-  };
-}
-
-function documentLineFromRawState(raw: Record<string, unknown>, index: number): DocumentDetailLine {
-  return {
-    lineNumber: rawInt(raw, ["lineNumber", "line_number", "roworder"], index + 1),
-    itemCode: rawText(raw, ["itemCode", "item_code"]),
-    itemName: rawText(raw, ["itemName", "item_name"]),
-    barcode: rawText(raw, ["barcode"]),
-    whCode: rawText(raw, ["whCode", "wh_code"]),
-    shelfCode: rawText(raw, ["shelfCode", "shelf_code"]),
-    unitCode: rawText(raw, ["unitCode", "unit_code"]),
-    qty: rawText(raw, ["qty"]),
-    price: rawText(raw, ["price"]),
-    discount: rawText(raw, ["discount"]),
-    sumAmount: rawText(raw, ["sumAmount", "sum_amount"]),
-    totalVatValue: rawText(raw, ["totalVatValue", "total_vat_value"]),
-  };
-}
-
-// Mask internal staging/test markers that leak from automated rollback/test flows.
-// Anything matching STAGING_*, REALWRITE_*, or ROLLBACK_<digits> is hidden from end users.
-function maskInternalRemark(value: string): string {
-  if (!value) return value;
-  const stripped = value
-    .split(/\s+/)
-    .filter((token) => !/^(STAGING|REALWRITE|ROLLBACK)[_A-Z0-9]*$/i.test(token))
-    .join(" ")
-    .trim();
-  return stripped;
-}
-
-function rawText(raw: Record<string, unknown>, keys: string[], fallback = "") {
-  for (const key of keys) {
-    const value = raw[key];
-    if (value !== undefined && value !== null && value !== "") return String(value);
-  }
-  return fallback;
-}
-
-function rawInt(raw: Record<string, unknown>, keys: string[], fallback = 0) {
-  const value = rawText(raw, keys);
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : fallback;
-}
-
-function numericValue(value: string) {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-async function apiGet<T>(url: string): Promise<ApiResponse<T>> {
-  return apiRequest<T>(url, { credentials: "include" });
-}
-
-async function apiPost<T>(url: string, body: unknown): Promise<ApiResponse<T>> {
-  return apiRequest<T>(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    credentials: "include",
-  });
-}
-
-async function apiPut<T>(url: string, body: unknown): Promise<ApiResponse<T>> {
-  return apiRequest<T>(url, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    credentials: "include",
-  });
-}
-
-async function apiRequest<T>(url: string, init: RequestInit): Promise<ApiResponse<T>> {
-  try {
-    const response = await fetch(url, init);
-    const text = await response.text();
-    if (!text.trim()) {
-      notifyAuthExpired(response.status);
-      return {
-        success: false,
-        message: response.ok ? "empty response" : `HTTP ${response.status}`,
-        data: null,
-        error: {
-          code: "HTTP_ERROR",
-          detail: response.ok ? "เซิร์ฟเวอร์ตอบกลับโดยไม่มีข้อมูล" : "เชื่อมต่อ backend ไม่สำเร็จหรือ backend ยังไม่พร้อมใช้งาน",
-        },
-      };
-    }
-    try {
-      const payload = JSON.parse(text) as ApiResponse<T>;
-      notifyAuthExpired(payload.error?.code === "ERR_UNAUTHORIZED" ? 401 : response.status, payload.error?.code);
-      if (!payload.success && payload.error) {
-        const friendly = friendlyThaiError(payload.error.code, response.status);
-        if (friendly) {
-          payload.error = { ...payload.error, detail: payload.error.detail || friendly };
-        }
-      }
-      return payload;
-    } catch {
-      return {
-        success: false,
-        message: "invalid json response",
-        data: null,
-        error: {
-          code: "INVALID_JSON",
-          detail: "เซิร์ฟเวอร์ตอบกลับมาไม่ใช่ JSON ที่ระบบอ่านได้",
-        },
-      };
-    }
-  } catch (error) {
-    return {
-      success: false,
-      message: "network error",
-      data: null,
-      error: {
-        code: "NETWORK_ERROR",
-        detail: error instanceof Error ? error.message : "เชื่อมต่อ backend ไม่สำเร็จ",
-      },
-    };
-  }
-}
-
-const friendlyErrorMap: Record<string, string> = {
-  ERR_UNAUTHORIZED: "กรุณาเข้าสู่ระบบใหม่",
-  ERR_FORBIDDEN: "บัญชีของคุณไม่มีสิทธิ์ใช้งานส่วนนี้",
-  ERR_INVALID_INPUT: "ข้อมูลที่ส่งไม่ครบหรือไม่ถูกต้อง",
-  ERR_VALIDATION: "ข้อมูลที่กรอกไม่ผ่านการตรวจสอบ",
-  ERR_RATE_LIMITED: "พยายามเข้าสู่ระบบบ่อยเกินไป กรุณารอสักครู่",
-  ERR_DATABASE_VERIFICATION: "ฐานข้อมูลยังไม่พร้อมใช้งาน",
-  ERR_DATABASE: "เกิดปัญหากับฐานข้อมูล กรุณาแจ้งผู้ดูแลระบบ",
-  ERR_NOT_FOUND: "ไม่พบข้อมูลที่ร้องขอ",
-  ERR_CONFLICT: "ข้อมูลขัดแย้งกับสถานะปัจจุบัน",
-  ERR_INTERNAL: "เกิดข้อผิดพลาดภายในระบบ กรุณาลองใหม่อีกครั้ง",
-};
-
-function friendlyThaiError(code: string | undefined, status: number): string {
-  if (code && friendlyErrorMap[code]) return friendlyErrorMap[code];
-  if (status === 429) return friendlyErrorMap.ERR_RATE_LIMITED;
-  if (status === 503) return friendlyErrorMap.ERR_DATABASE_VERIFICATION;
-  if (status >= 500) return friendlyErrorMap.ERR_INTERNAL;
-  return "";
-}
-
-function notifyAuthExpired(status: number, code = "") {
-  if (status === 401 || code === "ERR_UNAUTHORIZED") {
-    window.dispatchEvent(new Event(authExpiredEvent));
-  }
-}
