@@ -66,9 +66,15 @@ nohup cloudflared tunnel --url http://127.0.0.1:${FRONTEND_PORT} --no-autoupdate
 TUNNEL_PID=\$!
 echo "  cloudflared PID: \${TUNNEL_PID}"
 
-# Wait a moment then extract the tunnel URL from the log
-sleep 5
-TUNNEL_URL=\$(grep -oP 'https://[a-z0-9\-]+\.trycloudflare\.com' ${LOG_FILE} 2>/dev/null | head -1 || true)
+# Wait up to 30s for tunnel URL to appear in log
+TUNNEL_URL=""
+for attempt in \$(seq 1 30); do
+  sleep 1
+  TUNNEL_URL=\$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' ${LOG_FILE} 2>/dev/null | head -1 || true)
+  if [ -n "\${TUNNEL_URL}" ]; then
+    break
+  fi
+done
 
 if [ -n "\${TUNNEL_URL}" ]; then
   echo ""
@@ -77,7 +83,7 @@ if [ -n "\${TUNNEL_URL}" ]; then
   echo "  \${TUNNEL_URL}"
   echo "  =============================================="
 else
-  echo "  Tunnel started — check log for URL:"
+  echo "  Tunnel did not produce URL within 30s — check log:"
   echo "  ssh ${SERVER_USER}@${SERVER_HOST} 'grep trycloudflare ${LOG_FILE}'"
 fi
 REMOTE

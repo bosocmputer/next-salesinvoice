@@ -1,4 +1,4 @@
-import { Component, FormEvent, ReactNode, Suspense, lazy, useEffect, useMemo, useState, type ComponentType, type CSSProperties } from "react";
+import { Component, FormEvent, ReactNode, Suspense, createContext, lazy, useCallback, useContext, useEffect, useMemo, useState, type ComponentType, type CSSProperties } from "react";
 import {
   Alert,
   AppBar,
@@ -27,6 +27,7 @@ import {
   ListItemText,
   MenuItem,
   Paper,
+  Snackbar,
   Stack,
   Tab,
   Table,
@@ -466,12 +467,49 @@ export default function App() {
     <AppErrorBoundary>
       <ThemeProvider theme={appTheme}>
         <CssBaseline />
-        <BrowserRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
-          <AppRoutes />
-        </BrowserRouter>
+        <ToastProvider>
+          <BrowserRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+            <AppRoutes />
+          </BrowserRouter>
+        </ToastProvider>
       </ThemeProvider>
     </AppErrorBoundary>
   );
+}
+
+type ToastTone = "success" | "error" | "warning" | "info";
+type ToastState = { open: boolean; tone: ToastTone; message: string };
+const ToastContext = createContext<(message: string, tone?: ToastTone) => void>(() => undefined);
+
+function ToastProvider({ children }: { children: ReactNode }) {
+  const [toast, setToast] = useState<ToastState>({ open: false, tone: "info", message: "" });
+  const show = useCallback((message: string, tone: ToastTone = "info") => {
+    setToast({ open: true, tone, message });
+  }, []);
+  return (
+    <ToastContext.Provider value={show}>
+      {children}
+      <Snackbar
+        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
+        autoHideDuration={3500}
+        onClose={() => setToast((prev) => ({ ...prev, open: false }))}
+        open={toast.open}
+      >
+        <Alert
+          onClose={() => setToast((prev) => ({ ...prev, open: false }))}
+          severity={toast.tone}
+          sx={{ width: "100%" }}
+          variant="filled"
+        >
+          {toast.message}
+        </Alert>
+      </Snackbar>
+    </ToastContext.Provider>
+  );
+}
+
+function useToast() {
+  return useContext(ToastContext);
 }
 
 class AppErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
@@ -1190,6 +1228,7 @@ function DocumentLinesPanel({ compareLines, docNo, lines: providedLines }: { com
 function BulkInvoiceEditPage({ status, user }: { status: DatabaseStatus | null; user: UserClaims }) {
   const isMobile = useMediaQuery(appTheme.breakpoints.down("sm"));
   const isAdmin = user.role === "Admin";
+  const toast = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
   const [documents, setDocuments] = useState<PagedDocuments | null>(null);
   const [docFormats, setDocFormats] = useState<DocFormat[]>([]);
@@ -1533,8 +1572,11 @@ function BulkInvoiceEditPage({ status, user }: { status: DatabaseStatus | null; 
       await refreshDocumentsAfterApply(`ส่งเข้า SML สำเร็จ ${response.data.appliedCount} บิล${response.data.failedCount ? `, ส่งไม่สำเร็จ ${response.data.failedCount} บิล` : ""}${response.data.skippedCount ? `, ยังไม่ดำเนินการ ${response.data.skippedCount} บิล` : ""}`);
       setConfirmApplyOpen(false);
       setConfirmApplyText("");
+      toast(`ส่งเข้า SML สำเร็จ ${response.data.appliedCount} บิล`, response.data.failedCount ? "warning" : "success");
     } else {
-      setMessage(response.error?.detail || response.message || "ส่งหลายบิลเข้า SML ไม่สำเร็จ");
+      const detail = response.error?.detail || response.message || "ส่งหลายบิลเข้า SML ไม่สำเร็จ";
+      setMessage(detail);
+      toast(detail, "error");
     }
     setBusy(false);
   }
@@ -2748,15 +2790,21 @@ function TechnicalJsonDialog({ item, onClose }: { item: DocumentHistoryItem; onC
   const isMobile = useMediaQuery(appTheme.breakpoints.down("sm"));
   const [tab, setTab] = useState(0);
   const [copied, setCopied] = useState(false);
+  const toast = useToast();
   const sections = useMemo(() => technicalJsonSections(item), [item]);
   const active = sections[tab] || sections[0];
   const jsonComponents = useMemo(() => createJsonDiffComponents(active.diff), [active.diff]);
   const hasDiff = active.diff.size > 0;
 
   async function copyActiveJson() {
-    await navigator.clipboard?.writeText(formatJSON(active.value));
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1400);
+    try {
+      await navigator.clipboard?.writeText(formatJSON(active.value));
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1400);
+      toast("คัดลอก JSON เรียบร้อย", "success");
+    } catch {
+      toast("คัดลอกไม่สำเร็จ — เบราว์เซอร์ไม่อนุญาตเข้าถึงคลิปบอร์ด", "error");
+    }
   }
 
   return (
@@ -4142,7 +4190,13 @@ async function apiRequest<T>(url: string, init: RequestInit): Promise<ApiRespons
     }
     try {
       const payload = JSON.parse(text) as ApiResponse<T>;
-      notifyAuthExpired(0, payload.error?.code);
+      notifyAuthExpired(payload.error?.code === "ERR_UNAUTHORIZED" ? 401 : response.status, payload.error?.code);
+      if (!payload.success && payload.error) {
+        const friendly = friendlyThaiError(payload.error.code, response.status);
+        if (friendly) {
+          payload.error = { ...payload.error, detail: payload.error.detail || friendly };
+        }
+      }
       return payload;
     } catch {
       return {
@@ -4166,6 +4220,27 @@ async function apiRequest<T>(url: string, init: RequestInit): Promise<ApiRespons
       },
     };
   }
+}
+
+const friendlyErrorMap: Record<string, string> = {
+  ERR_UNAUTHORIZED: "กรุณาเข้าสู่ระบบใหม่",
+  ERR_FORBIDDEN: "บัญชีของคุณไม่มีสิทธิ์ใช้งานส่วนนี้",
+  ERR_INVALID_INPUT: "ข้อมูลที่ส่งไม่ครบหรือไม่ถูกต้อง",
+  ERR_VALIDATION: "ข้อมูลที่กรอกไม่ผ่านการตรวจสอบ",
+  ERR_RATE_LIMITED: "พยายามเข้าสู่ระบบบ่อยเกินไป กรุณารอสักครู่",
+  ERR_DATABASE_VERIFICATION: "ฐานข้อมูลยังไม่พร้อมใช้งาน",
+  ERR_DATABASE: "เกิดปัญหากับฐานข้อมูล กรุณาแจ้งผู้ดูแลระบบ",
+  ERR_NOT_FOUND: "ไม่พบข้อมูลที่ร้องขอ",
+  ERR_CONFLICT: "ข้อมูลขัดแย้งกับสถานะปัจจุบัน",
+  ERR_INTERNAL: "เกิดข้อผิดพลาดภายในระบบ กรุณาลองใหม่อีกครั้ง",
+};
+
+function friendlyThaiError(code: string | undefined, status: number): string {
+  if (code && friendlyErrorMap[code]) return friendlyErrorMap[code];
+  if (status === 429) return friendlyErrorMap.ERR_RATE_LIMITED;
+  if (status === 503) return friendlyErrorMap.ERR_DATABASE_VERIFICATION;
+  if (status >= 500) return friendlyErrorMap.ERR_INTERNAL;
+  return "";
 }
 
 function notifyAuthExpired(status: number, code = "") {
