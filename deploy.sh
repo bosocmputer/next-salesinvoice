@@ -19,7 +19,8 @@ SSH_CMD="sshpass -p '${SERVER_PASS}' ssh -o StrictHostKeyChecking=no ${SERVER_US
 RSYNC_CMD="sshpass -p '${SERVER_PASS}' rsync -avz --progress"
 
 echo "===> [1/4] Syncing project files to server..."
-${RSYNC_CMD} \
+sshpass -p "${SERVER_PASS}" rsync -avz --progress \
+  -e "ssh -o StrictHostKeyChecking=no" \
   --exclude='.git' \
   --exclude='node_modules' \
   --exclude='frontend/dist' \
