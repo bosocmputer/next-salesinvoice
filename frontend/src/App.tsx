@@ -1,4 +1,4 @@
-import { Component, FormEvent, ReactNode, Suspense, createContext, lazy, useCallback, useContext, useEffect, useMemo, useState, type ComponentType, type CSSProperties } from "react";
+import { Component, FormEvent, ReactNode, Suspense, createContext, lazy, useCallback, useContext, useEffect, useMemo, useRef, useState, type ComponentType, type CSSProperties } from "react";
 import {
   Alert,
   AppBar,
@@ -1229,6 +1229,27 @@ function BulkInvoiceEditPage({ status, user }: { status: DatabaseStatus | null; 
   const isMobile = useMediaQuery(appTheme.breakpoints.down("sm"));
   const isAdmin = user.role === "Admin";
   const toast = useToast();
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      const target = event.target as HTMLElement | null;
+      const tag = target?.tagName?.toLowerCase();
+      const inEditable = tag === "input" || tag === "textarea" || tag === "select" || target?.isContentEditable;
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+        return;
+      }
+      if (event.key === "/" && !inEditable) {
+        event.preventDefault();
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
   const [searchParams, setSearchParams] = useSearchParams();
   const [documents, setDocuments] = useState<PagedDocuments | null>(null);
   const [docFormats, setDocFormats] = useState<DocFormat[]>([]);
@@ -1610,9 +1631,10 @@ function BulkInvoiceEditPage({ status, user }: { status: DatabaseStatus | null; 
             />
             <TextField
               helperText="ค้นหาเลขบิลหลายใบหรือช่วงได้ เช่น เลขเริ่ม:เลขจบ,เลขเดี่ยว"
+              inputRef={searchInputRef}
               label="ค้นหา"
               onChange={(event) => setSearch(event.target.value)}
-              placeholder="เลขบิล / รหัสลูกค้า / หมายเหตุ"
+              placeholder="เลขบิล / รหัสลูกค้า / หมายเหตุ  (กด Ctrl+K)"
               size="small"
               sx={{ gridColumn: { xs: "1 / -1", lg: "auto" } }}
               value={search}
@@ -3400,6 +3422,18 @@ function PageLoading({ title }: { title: string }) {
         <Typography component="h2" variant="h6">{title}</Typography>
         <SkeletonLine width="60%" />
         <LinearProgress />
+      </Paper>
+      <Paper variant="outlined" sx={{ display: "grid", gap: 1.25, p: 2 }}>
+        {Array.from({ length: 6 }).map((_, idx) => (
+          <Stack direction="row" key={idx} spacing={1.5} sx={{ alignItems: "center" }}>
+            <Box sx={{ bgcolor: "action.hover", borderRadius: 1, height: 14, width: 28 }} />
+            <Box sx={{ bgcolor: "action.hover", borderRadius: 1, height: 14, width: "16%" }} />
+            <Box sx={{ bgcolor: "action.hover", borderRadius: 1, height: 14, width: "24%" }} />
+            <Box sx={{ bgcolor: "action.hover", borderRadius: 1, height: 14, width: "12%" }} />
+            <Box sx={{ bgcolor: "action.hover", borderRadius: 1, flex: 1, height: 14 }} />
+            <Box sx={{ bgcolor: "action.hover", borderRadius: 1, height: 14, width: "10%" }} />
+          </Stack>
+        ))}
       </Paper>
     </Stack>
   );
