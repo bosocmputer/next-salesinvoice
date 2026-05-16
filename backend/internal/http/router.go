@@ -12,9 +12,7 @@ import (
 	"next-salesinvoice/backend/internal/appruntime"
 	"next-salesinvoice/backend/internal/audit"
 	"next-salesinvoice/backend/internal/config"
-	"next-salesinvoice/backend/internal/db"
 	"next-salesinvoice/backend/internal/errorcode"
-	"next-salesinvoice/backend/internal/migration"
 	"next-salesinvoice/backend/internal/model"
 	"next-salesinvoice/backend/internal/response"
 	"next-salesinvoice/backend/internal/service"
@@ -45,11 +43,6 @@ func NewRouter(
 	api := r.Group("/api/v1")
 	api.GET("/health", deps.health)
 	api.GET("/system/database-status", deps.databaseStatus)
-	api.POST("/system/database-bootstrap", deps.databaseBootstrap)
-	api.GET("/system/database-config", deps.authMiddleware(), deps.requireRole("Admin"), deps.databaseConfig)
-	api.PUT("/system/database-config", deps.authMiddleware(), deps.requireRole("Admin"), deps.saveDatabaseConfig)
-	api.POST("/system/database-reconnect", deps.authMiddleware(), deps.requireRole("Admin"), deps.databaseReconnect)
-	api.POST("/system/database-verify", deps.databaseVerify)
 	api.POST("/system/database-migrate", deps.authMiddleware(), deps.requireRole("Admin"), deps.databaseMigrate)
 	api.POST("/auth/login", deps.login)
 	api.POST("/auth/logout", deps.logout)
@@ -376,173 +369,6 @@ func (d RouterDeps) databaseStatus(c *gin.Context) {
 		return
 	}
 	response.OK(c, nethttp.StatusOK, "ok", status)
-}
-
-func (d RouterDeps) databaseConfig(c *gin.Context) {
-	configView, err := d.state.Current().Settings.DatabaseConfig(c.Request.Context())
-	if err != nil {
-		response.Error(c, nethttp.StatusInternalServerError, errorcode.DBConnection, "load database config failed", err.Error())
-		return
-	}
-	response.OK(c, nethttp.StatusOK, "ok", configView)
-}
-
-func (d RouterDeps) saveDatabaseConfig(c *gin.Context) {
-	var req model.DatabaseConfig
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Error(c, nethttp.StatusBadRequest, errorcode.InvalidInput, "invalid database config", "request body is invalid")
-		return
-	}
-	claims := c.MustGet("claims").(session.Claims)
-	configView, err := d.state.Current().Settings.SaveDatabaseConfig(c.Request.Context(), req, claims.UserCode)
-	if err != nil {
-		response.Error(c, nethttp.StatusBadRequest, errorcode.InvalidInput, "save database config failed", err.Error())
-		return
-	}
-	_ = d.state.Current().Audit.Write(c.Request.Context(), audit.Entry{
-		UserCode:     claims.UserCode,
-		Action:       "system.database_config_saved",
-		ResourceType: "nsi_app_settings",
-		ResourceID:   "database.connection",
-		After:        configView,
-		IPAddress:    c.ClientIP(),
-		UserAgent:    c.Request.UserAgent(),
-	})
-	response.OK(c, nethttp.StatusOK, "database config saved", configView)
-}
-
-func (d RouterDeps) databaseReconnect(c *gin.Context) {
-	claims := c.MustGet("claims").(session.Claims)
-	current := d.state.Current()
-	saved, err := current.Settings.SavedDatabaseConfig(c.Request.Context())
-	if err != nil {
-		response.Error(c, nethttp.StatusBadRequest, errorcode.InvalidInput, "load saved database config failed", err.Error())
-		return
-	}
-	nextCfg := current.Cfg.WithDatabase(
-		saved.Host,
-		saved.Port,
-		saved.Database,
-		saved.User,
-		saved.Password,
-		saved.SSLMode,
-		saved.Schema,
-		saved.MaxConns,
-	)
-	if err := nextCfg.Validate(); err != nil {
-		response.Error(c, nethttp.StatusBadRequest, errorcode.InvalidInput, "saved database config is invalid", err.Error())
-		return
-	}
-	snapshot, err := d.state.Reconnect(c.Request.Context(), nextCfg)
-	if err != nil {
-		response.Error(c, nethttp.StatusInternalServerError, errorcode.DatabaseVerification, "database reconnect failed", err.Error())
-		return
-	}
-	status, err := snapshot.Migrator.Verify(c.Request.Context())
-	if err != nil {
-		response.Error(c, nethttp.StatusInternalServerError, errorcode.DatabaseVerification, "database reconnect verify failed", err.Error())
-		return
-	}
-	_ = snapshot.Audit.Write(c.Request.Context(), audit.Entry{
-		UserCode:     claims.UserCode,
-		Action:       "system.database_reconnected",
-		ResourceType: "database",
-		ResourceID:   status.Database,
-		After: gin.H{
-			"database": status.Database,
-			"host":     saved.Host,
-			"port":     saved.Port,
-		},
-		IPAddress: c.ClientIP(),
-		UserAgent: c.Request.UserAgent(),
-	})
-	response.OK(c, nethttp.StatusOK, "database reconnected", gin.H{"status": status})
-}
-
-type databaseBootstrapRequest struct {
-	SetupSecret string               `json:"setupSecret"`
-	Config      model.DatabaseConfig `json:"config"`
-}
-
-func (d RouterDeps) databaseBootstrap(c *gin.Context) {
-	var req databaseBootstrapRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Error(c, nethttp.StatusBadRequest, errorcode.InvalidInput, "invalid database setup input", "request body is invalid")
-		return
-	}
-	if d.cfg.DatabaseSetupSecret == "" || req.SetupSecret != d.cfg.DatabaseSetupSecret {
-		response.Error(c, nethttp.StatusForbidden, errorcode.Forbidden, "forbidden", "database setup secret is invalid")
-		return
-	}
-	cfg := d.state.Current().Cfg.WithDatabase(
-		strings.TrimSpace(req.Config.Host),
-		req.Config.Port,
-		strings.TrimSpace(req.Config.Database),
-		strings.TrimSpace(req.Config.User),
-		req.Config.Password,
-		strings.TrimSpace(req.Config.SSLMode),
-		strings.TrimSpace(req.Config.Schema),
-		req.Config.MaxConns,
-	)
-	if cfg.DBMaxConns <= 0 {
-		cfg.DBMaxConns = d.cfg.DBMaxConns
-	}
-	if err := cfg.Validate(); err != nil {
-		response.Error(c, nethttp.StatusBadRequest, errorcode.InvalidInput, "database setup is invalid", err.Error())
-		return
-	}
-	snapshot, err := d.state.Reconnect(c.Request.Context(), cfg)
-	if err != nil {
-		response.Error(c, nethttp.StatusInternalServerError, errorcode.DatabaseVerification, "database setup failed", err.Error())
-		return
-	}
-	if err := snapshot.Migrator.VerifyAndMigrate(c.Request.Context()); err != nil {
-		response.Error(c, nethttp.StatusInternalServerError, errorcode.DatabaseVerification, "database setup migration failed", err.Error())
-		return
-	}
-	status, err := snapshot.Migrator.Verify(c.Request.Context())
-	if err != nil {
-		response.Error(c, nethttp.StatusInternalServerError, errorcode.DatabaseVerification, "database setup verify failed", err.Error())
-		return
-	}
-	response.OK(c, nethttp.StatusOK, "database setup applied", gin.H{"status": status})
-}
-
-func (d RouterDeps) databaseVerify(c *gin.Context) {
-	var req model.DatabaseConfig
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Error(c, nethttp.StatusBadRequest, errorcode.InvalidInput, "invalid database verify input", "request body is invalid")
-		return
-	}
-	cfg := d.state.Current().Cfg.WithDatabase(
-		strings.TrimSpace(req.Host),
-		req.Port,
-		strings.TrimSpace(req.Database),
-		strings.TrimSpace(req.User),
-		req.Password,
-		strings.TrimSpace(req.SSLMode),
-		strings.TrimSpace(req.Schema),
-		req.MaxConns,
-	)
-	if cfg.DBMaxConns <= 0 {
-		cfg.DBMaxConns = d.cfg.DBMaxConns
-	}
-	if err := cfg.Validate(); err != nil {
-		response.Error(c, nethttp.StatusBadRequest, errorcode.InvalidInput, "database verify input is invalid", err.Error())
-		return
-	}
-	pool, err := db.NewPool(c.Request.Context(), cfg)
-	if err != nil {
-		response.Error(c, nethttp.StatusInternalServerError, errorcode.DatabaseVerification, "database verify failed", err.Error())
-		return
-	}
-	defer pool.Close()
-	status, err := migration.New(pool, cfg).Verify(c.Request.Context())
-	if err != nil {
-		response.Error(c, nethttp.StatusInternalServerError, errorcode.DatabaseVerification, "database verify failed", err.Error())
-		return
-	}
-	response.OK(c, nethttp.StatusOK, "database verify success", gin.H{"status": status})
 }
 
 func (d RouterDeps) databaseMigrate(c *gin.Context) {

@@ -6,7 +6,7 @@
 
 ## สถานะล่าสุด
 
-อัปเดตล่าสุด: 2026-05-15 Asia/Bangkok
+อัปเดตล่าสุด: 2026-05-16 Asia/Bangkok
 
 - Backend: Go + Gin + pgx/PostgreSQL
 - Frontend: React + Vite + Material UI (`@mui/material`, `@mui/x-data-grid`) และ `@uiw/react-json-view`
@@ -14,6 +14,7 @@
 - ใช้ Material UI components เป็นหลัก และถอดระบบ utility/custom UI เก่าออกจาก flow ปัจจุบันแล้ว
 - `GET /api/v1/system/database-status` เป็น read-only verify
 - การสร้างตาราง `nsi_*` ต้องเป็น Admin action ผ่าน `POST /api/v1/system/database-migrate`
+- การตั้งค่า database connection บังคับผ่าน `.env` เท่านั้น ไม่มี UI สำหรับเปลี่ยน runtime
 - Verification ล่าสุดใน session นี้:
   - `npm run build`: Pass
   - `go test ./...`: Pass

@@ -1,6 +1,6 @@
 # next-salesinvoice Session Handoff
 
-Last updated: 2026-05-15 Asia/Bangkok
+Last updated: 2026-05-16 Asia/Bangkok
 
 ไฟล์นี้คือ checkpoint ล่าสุดสำหรับเปิด chat ใหม่หรือส่งต่อให้ AI ตัวอื่นทำงานต่อ อ่านคู่กับ `README.md` ก่อนแก้โค้ดเสมอ
 
@@ -65,6 +65,12 @@ App-owned tables:
 
 ## Latest UX/UI State
 
+`/login`:
+
+- ฟอร์ม login มีแค่ รหัสพนักงาน + รหัสผ่าน + ปุ่มเข้าสู่ระบบ
+- แสดง DB status badge (ฐานข้อมูลพร้อมใช้งาน / ฐานข้อมูลยังไม่พร้อม)
+- ไม่มีปุ่ม "ตั้งค่าฐานข้อมูล" แล้ว — config บังคับผ่าน `.env` เท่านั้น
+
 `/bulk-edit`:
 
 - Compact MUI/DataGrid workbench
@@ -101,8 +107,8 @@ App-owned tables:
 - Runtime startup/reconnect verifies database with `Verify()` only
 - It no longer silently creates `nsi_*` tables during status/startup
 - Explicit Admin migration uses `POST /api/v1/system/database-migrate`
-- Login/auth still depends on `nsi_app_users`; a brand-new SML database should be installed through setup/bootstrap or Admin system action before normal use
-- `database-bootstrap` with setup secret remains an explicit setup path and runs migration after reconnect
+- Login/auth still depends on `nsi_app_users`; a brand-new SML database should be installed through Admin system action before normal use
+- **Database connection config is env-only** (`SML_DB_*`); runtime APIs for changing DB config (`database-bootstrap`, `database-config`, `database-reconnect`, `database-verify`) have been removed
 - Document search parser supports exact list/range syntax and falls back to fuzzy search for normal text
 - Audit document search uses the same parser behavior
 
@@ -162,5 +168,3 @@ QA artifact:
 - Stress test with production-like data sizes
 - Multi-user conflict/stress test
 - Full E2E seed/apply/rollback regression suite
-- Password-at-rest hardening for saved DB config
-- Production deploy/runbook and monitoring/logging

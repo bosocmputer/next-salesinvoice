@@ -95,17 +95,6 @@ type DatabaseStatus = {
   missingAppTables?: string[];
 };
 
-type DatabaseConfig = {
-  host: string;
-  port: number;
-  database: string;
-  user: string;
-  password?: string;
-  sslMode: string;
-  schema: string;
-  maxConns: number;
-};
-
 type UserClaims = {
   userCode: string;
   displayName: string;
@@ -690,8 +679,6 @@ function LoginScreen({
   const [code, setCode] = useState("");
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [databaseSetupOpen, setDatabaseSetupOpen] = useState(false);
-
   async function submit(event: FormEvent) {
     event.preventDefault();
     setSubmitting(true);
@@ -722,126 +709,8 @@ function LoginScreen({
         <AppButton disabled={!databaseReady || !code || !password || submitting} tone="primary" type="submit">
           {submitting ? "กำลังเข้าสู่ระบบ" : "เข้าสู่ระบบ"}
         </AppButton>
-        <AppButton onClick={() => setDatabaseSetupOpen(true)} type="button">ตั้งค่าฐานข้อมูล</AppButton>
       </Paper>
-      {databaseSetupOpen ? <LoginDatabaseSetupDialog status={status} onClose={() => setDatabaseSetupOpen(false)} /> : null}
     </AuthShell>
-  );
-}
-
-function LoginDatabaseSetupDialog({ status, onClose }: { status: DatabaseStatus | null; onClose: () => void }) {
-  const isMobile = useMediaQuery(appTheme.breakpoints.down("sm"));
-  const [form, setForm] = useState<DatabaseConfig>({
-    host: "192.168.2.248",
-    port: 5432,
-    database: status?.database || "sml1_2026",
-    user: "postgres",
-    password: "",
-    sslMode: "disable",
-    schema: "public",
-    maxConns: 3,
-  });
-  const [busy, setBusy] = useState(false);
-  const [verifiedKey, setVerifiedKey] = useState("");
-  const [setupSecret, setSetupSecret] = useState("");
-  const [message, setMessage] = useState("");
-
-  const databaseConfig = (): DatabaseConfig => ({
-    ...form,
-    sslMode: "disable",
-    schema: "public",
-    maxConns: 3,
-  });
-  const currentKey = JSON.stringify(databaseConfig());
-  const canSubmit = Boolean(form.host && form.port && form.database && form.user && form.password);
-  const verified = verifiedKey === currentKey;
-  const canApply = canSubmit && verified && setupSecret.trim().length > 0;
-
-  function updateForm(next: DatabaseConfig) {
-    setForm(next);
-    setVerifiedKey("");
-    setMessage("");
-  }
-
-  async function verifyDatabaseSetup() {
-    setBusy(true);
-    setVerifiedKey("");
-    setMessage("");
-    const response = await apiPost<{ status: DatabaseStatus }>("/api/v1/system/database-verify", databaseConfig());
-    if (response.success && response.data) {
-      setVerifiedKey(currentKey);
-      setMessage(`ทดสอบผ่าน เชื่อมต่อฐาน ${response.data.status.database} ได้แล้ว`);
-    } else {
-      setMessage(response.error?.detail || response.message || "ทดสอบการเชื่อมต่อไม่สำเร็จ");
-    }
-    setBusy(false);
-  }
-
-  async function applyDatabaseSetup() {
-    if (!verified) {
-      setMessage("กรุณาทดสอบการเชื่อมต่อให้ผ่านก่อนเริ่มใช้ค่าฐานนี้");
-      return;
-    }
-    setBusy(true);
-    setMessage("");
-    const response = await apiPost<{ status: DatabaseStatus }>("/api/v1/system/database-bootstrap", {
-      setupSecret: setupSecret.trim(),
-      config: databaseConfig(),
-    });
-    if (response.success && response.data) {
-      setMessage(`เริ่มใช้ฐาน ${response.data.status.database} แล้ว โหลดหน้าใหม่เพื่อเข้าสู่ระบบด้วยฐานนี้`);
-    } else {
-      setMessage(response.error?.detail || response.message || "เริ่มใช้ฐานข้อมูลไม่สำเร็จ");
-    }
-    setBusy(false);
-  }
-
-  return (
-    <Dialog fullScreen={isMobile} fullWidth maxWidth="md" open onClose={busy ? undefined : onClose}>
-      <DialogTitle>
-        <StackRow>
-          <Box sx={{ display: "grid", gap: 0.25, minWidth: 0 }}>
-            <Typography color="text.secondary" variant="body2">ฐานข้อมูลก่อนเข้าสู่ระบบ</Typography>
-            <Typography variant="h6">ตั้งค่าการเชื่อมต่อฐานข้อมูล</Typography>
-          </Box>
-          <StatusBadge tone={status?.connected ? "success" : "danger"}>{status?.connected ? "ฐานเดิมพร้อม" : "ฐานเดิมไม่พร้อม"}</StatusBadge>
-        </StackRow>
-      </DialogTitle>
-      <DialogContent dividers>
-        <Box sx={{ display: "grid", gap: 2 }}>
-          <Alert severity="warning">ใช้เฉพาะผู้ดูแลระบบตอนเลือกฐานข้อมูลร้าน ระบบจะใช้ SSL disable และ schema public ให้อัตโนมัติ</Alert>
-          {busy ? <LinearProgress /> : null}
-          {message ? <Alert severity={message.includes("ผ่าน") || message.includes("แล้ว") ? "success" : "error"}>{message}</Alert> : null}
-          <Box sx={{ display: "grid", gap: 2, gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr" } }}>
-            <TextField label="Host" value={form.host} onChange={(event) => updateForm({ ...form, host: event.target.value })} />
-            <TextField label="Port" type="number" value={form.port} onChange={(event) => updateForm({ ...form, port: Number(event.target.value) })} />
-            <TextField label="Database" value={form.database} onChange={(event) => updateForm({ ...form, database: event.target.value })} />
-            <TextField label="User" value={form.user} onChange={(event) => updateForm({ ...form, user: event.target.value })} />
-            <TextField label="Password" type="password" value={form.password || ""} onChange={(event) => updateForm({ ...form, password: event.target.value })} />
-            <TextField
-              autoComplete="off"
-              label="รหัสยืนยันผู้ดูแลระบบ"
-              onChange={(event) => {
-                setSetupSecret(event.target.value);
-                setMessage("");
-              }}
-              placeholder="กรอกรหัสยืนยันก่อนเริ่มใช้ฐานนี้"
-              type="password"
-              value={setupSecret}
-            />
-          </Box>
-        </Box>
-      </DialogContent>
-      <DialogActions sx={{ alignItems: { xs: "stretch", sm: "center" }, flexDirection: { xs: "column", sm: "row" } }}>
-          <AppButton disabled={busy} fullWidth={isMobile} onClick={onClose}>ปิด</AppButton>
-          <AppButton disabled={busy || !canSubmit} fullWidth={isMobile} onClick={() => void verifyDatabaseSetup()} startIcon={busy ? <CircularProgress color="inherit" size={16} /> : undefined}>
-            {busy ? "กำลังทดสอบ" : verified ? "ทดสอบผ่านแล้ว" : "ทดสอบการเชื่อมต่อ"}
-          </AppButton>
-          <AppButton disabled={busy || !canApply} fullWidth={isMobile} onClick={() => void applyDatabaseSetup()} startIcon={busy ? <CircularProgress color="inherit" size={16} /> : undefined} tone="danger">
-            {busy ? "กำลังเชื่อมต่อ" : "เริ่มใช้ค่าฐานนี้"}
-          </AppButton>
-      </DialogActions>
-    </Dialog>
   );
 }
 

@@ -27,6 +27,7 @@ go run ./cmd/server
 - All protected write/admin endpoints require authenticated Admin role
 - App tables use prefix `nsi_`
 - SML-owned tables are not migrated by this app
+- Database connection config is **env-only** (`SML_DB_*`); there is no runtime API to change it
 
 ## Main Endpoints
 
@@ -34,12 +35,7 @@ System:
 
 - `GET /api/v1/health`
 - `GET /api/v1/system/database-status`
-- `POST /api/v1/system/database-verify`
 - `POST /api/v1/system/database-migrate`
-- `GET /api/v1/system/database-config`
-- `PUT /api/v1/system/database-config`
-- `POST /api/v1/system/database-reconnect`
-- `POST /api/v1/system/database-bootstrap`
 
 Auth:
 
@@ -98,6 +94,7 @@ Integration tests are skipped unless `NSI_INTEGRATION_DATABASE_URL` is set. Use 
 - Set `APP_ENV=production`
 - Set a unique `SESSION_SECRET`
 - Keep `SML_DB_MAX_CONNS` conservative, default `3`
+- Database connection is configured entirely via `.env` / environment variables — no runtime UI to change it
 - Do not log full connection strings or passwords
 - Put the backend behind HTTPS
 - Test write/rollback flows on a cloned SML database before live use

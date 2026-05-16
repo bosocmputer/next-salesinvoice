@@ -15,7 +15,6 @@ type Config struct {
 	ServerAddr                   string
 	AppEnv                       string
 	SessionSecret                string
-	DatabaseSetupSecret          string
 	RequestBodyLimit             int64
 	AutoCreatePerformanceIndexes bool
 	DBHost                       string
@@ -38,7 +37,6 @@ func Load() (Config, error) {
 		ServerAddr:                   getEnv("SERVER_ADDR", ":8080"),
 		AppEnv:                       getEnv("APP_ENV", "development"),
 		SessionSecret:                getEnv("SESSION_SECRET", "dev-secret-change-me-at-least-32-chars"),
-		DatabaseSetupSecret:          getEnv("NSI_DATABASE_SETUP_SECRET", "dev-db-setup"),
 		RequestBodyLimit:             int64(getEnvInt("REQUEST_BODY_LIMIT_BYTES", 1_048_576)),
 		AutoCreatePerformanceIndexes: getEnvBool("NSI_AUTO_CREATE_PERFORMANCE_INDEXES", true),
 		DBHost:                       getEnv("SML_DB_HOST", "192.168.2.248"),
@@ -82,9 +80,6 @@ func (c Config) Validate() error {
 	}
 	if c.AppEnv == "production" && c.SessionSecret == "dev-secret-change-me-at-least-32-chars" {
 		return errors.New("SESSION_SECRET must be changed in production")
-	}
-	if c.AppEnv == "production" && (c.DatabaseSetupSecret == "" || c.DatabaseSetupSecret == "dev-db-setup") {
-		return errors.New("NSI_DATABASE_SETUP_SECRET must be changed in production")
 	}
 	if c.RequestBodyLimit <= 0 || c.RequestBodyLimit > 5*1024*1024 {
 		return errors.New("REQUEST_BODY_LIMIT_BYTES must be between 1 and 5242880")
