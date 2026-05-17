@@ -447,7 +447,7 @@ function Shell({
           status={status}
           title={title}
         />
-        <Box component="main" sx={{ display: "grid", gap: 2, minWidth: 0, p: { xs: 1.5, md: 2 } }}>{children}</Box>
+        <Box component="main" sx={{ display: "grid", gap: 2, minWidth: 0, p: { xs: 1.5, md: 2 }, pb: { xs: "calc(env(safe-area-inset-bottom) + 12px)", md: 2 } }}>{children}</Box>
       </Box>
     </Box>
   );
@@ -473,7 +473,8 @@ function ShellHeader({
           gap: 1,
           justifyContent: "space-between",
           minHeight: { xs: 54, sm: 56 },
-          px: { xs: 1, sm: 2 },
+          pl: { xs: "calc(env(safe-area-inset-left) + 8px)", sm: 2 },
+          pr: { xs: "calc(env(safe-area-inset-right) + 8px)", sm: 2 },
         }}
       >
         <Stack direction="row" spacing={1} sx={{ alignItems: "center", minWidth: 0 }}>

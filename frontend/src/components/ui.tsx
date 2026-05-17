@@ -11,7 +11,7 @@ import {
   Typography,
   type ButtonProps,
 } from "@mui/material";
-import { AlertTriangle, type LucideIcon } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Circle, XCircle, type LucideIcon } from "lucide-react";
 
 export function AppButton({
   tone = "secondary",
@@ -33,7 +33,16 @@ export function SkeletonLine({ width }: { width: string }) {
 
 export function StatusBadge({ children, tone = "neutral" }: { children: ReactNode; tone?: "neutral" | "success" | "danger" }) {
   const color = tone === "success" ? "success" : tone === "danger" ? "error" : "default";
-  return <Chip color={color} label={children} size="small" variant={tone === "neutral" ? "outlined" : "filled"} />;
+  const Icon = tone === "success" ? CheckCircle2 : tone === "danger" ? XCircle : Circle;
+  return (
+    <Chip
+      color={color}
+      icon={<Icon aria-hidden size={14} />}
+      label={children}
+      size="small"
+      variant={tone === "neutral" ? "outlined" : "filled"}
+    />
+  );
 }
 
 export function PageHeader({ eyebrow, title, description, actions }: { eyebrow?: string; title: string; description?: string; actions?: ReactNode }) {

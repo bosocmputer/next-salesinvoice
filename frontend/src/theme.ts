@@ -82,6 +82,20 @@ export const appTheme = createTheme({
           WebkitFontSmoothing: "antialiased",
           MozOsxFontSmoothing: "grayscale",
         },
+        // Respect user's OS-level motion preference (WCAG 2.3.3 AAA).
+        "@media (prefers-reduced-motion: reduce)": {
+          "*, *::before, *::after": {
+            animationDuration: "0.001ms !important",
+            animationIterationCount: "1 !important",
+            transitionDuration: "0.001ms !important",
+            scrollBehavior: "auto !important",
+          },
+        },
+        // Stronger focus ring for keyboard navigation (WCAG 2.4.7).
+        ":focus-visible": {
+          outline: "2px solid #245a6d",
+          outlineOffset: 2,
+        },
       },
     },
     MuiButton: {
@@ -116,6 +130,19 @@ export const appTheme = createTheme({
       defaultProps: { size: "small" },
     },
     MuiAutocomplete: {
+      defaultProps: { size: "small" },
+    },
+    MuiOutlinedInput: {
+      styleOverrides: {
+        root: ({ theme }) => ({
+          [theme.breakpoints.down("sm")]: {
+            // Match button tap-target floor on touch breakpoints.
+            minHeight: TOUCH_TARGET_MIN_PX,
+          },
+        }),
+      },
+    },
+    MuiSelect: {
       defaultProps: { size: "small" },
     },
     MuiChip: {

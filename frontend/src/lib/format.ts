@@ -120,17 +120,25 @@ export function formatDocumentTime(value: string) {
   return `${match[1].padStart(2, "0")}:${match[2]}`;
 }
 
+const DATETIME_FORMATTER = new Intl.DateTimeFormat("th-TH", { dateStyle: "short", timeStyle: "short" });
+
 export function formatDateTime(value: string) {
   if (!value) return "-";
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return value;
-  return new Intl.DateTimeFormat("th-TH", { dateStyle: "short", timeStyle: "short" }).format(parsed);
+  return DATETIME_FORMATTER.format(parsed);
 }
+
+/**
+ * Singleton Intl.NumberFormat for money. Constructing the formatter is the
+ * costly part; reusing one instance avoids re-creation per grid cell render.
+ */
+const MONEY_FORMATTER = new Intl.NumberFormat("th-TH", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 export function formatMoney(value: string) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return value || "-";
-  return new Intl.NumberFormat("th-TH", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(parsed);
+  return MONEY_FORMATTER.format(parsed);
 }
 
 export function changedPaperSx(changed: boolean, tone: "warning" | "success" = "warning") {
