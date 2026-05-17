@@ -87,7 +87,8 @@ export function titleFromPath(pathname: string) {
   if (pathname.startsWith("/bulk-edit")) return "แก้ไขบิล";
   if (pathname.startsWith("/audit")) return "ประวัติและย้อนกลับ";
   if (pathname.startsWith("/system/status")) return "ตรวจระบบ";
-  return "แก้ไขบิล";
+  if (pathname === "/" || pathname === "") return "แก้ไขบิล";
+  return "ไม่พบหน้า";
 }
 
 export function legacyPathFromPage(page: string) {

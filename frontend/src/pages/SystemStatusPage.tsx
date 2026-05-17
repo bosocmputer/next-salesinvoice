@@ -62,7 +62,7 @@ export default function SystemStatusPage({ status, onRefresh }: { status: Databa
         onInstall={() => void installAppTables()}
       />
       {message ? <Alert severity={message.severity}>{message.text}</Alert> : null}
-      <Box sx={{ display: "grid", gap: 1.5, gridTemplateColumns: { xs: "1fr", md: "repeat(4, 1fr)" } }}>
+      <Box sx={{ display: "grid", gap: 1.5, gridTemplateColumns: { xs: "1fr", sm: "repeat(2, 1fr)", md: "repeat(4, 1fr)" } }}>
         <MetricCard icon={Database} label="ฐานข้อมูล" value={status?.database || "-"} />
         <MetricCard icon={CheckCircle2} label="เชื่อมต่อ" value={status?.connected ? "พร้อม" : "ไม่พร้อม"} tone={status?.connected ? "neutral" : "danger"} />
         <MetricCard icon={ShieldCheck} label="ตาราง SML" value={status?.requiredSmlReady ? "ครบ" : "ไม่ครบ"} tone={status?.requiredSmlReady ? "neutral" : "danger"} />
