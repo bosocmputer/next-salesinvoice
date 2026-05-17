@@ -404,6 +404,27 @@ function Shell({
 
   return (
     <Box sx={{ display: "flex", minHeight: "100vh" }}>
+      <Box
+        component="a"
+        href="#main-content"
+        sx={{
+          bgcolor: "primary.main",
+          borderRadius: 1,
+          color: "primary.contrastText",
+          fontWeight: 700,
+          left: 12,
+          position: "fixed",
+          px: 2,
+          py: 1,
+          top: 12,
+          transform: "translateY(-150%)",
+          transition: "transform 120ms ease",
+          zIndex: (theme) => theme.zIndex.tooltip + 1,
+          "&:focus-visible": { transform: "translateY(0)" },
+        }}
+      >
+        ข้ามไปยังเนื้อหา
+      </Box>
       <Drawer
         open
         variant="permanent"
@@ -447,7 +468,7 @@ function Shell({
           status={status}
           title={title}
         />
-        <Box component="main" sx={{ display: "grid", gap: 2, minWidth: 0, p: { xs: 1.5, md: 2 }, pb: { xs: "calc(env(safe-area-inset-bottom) + 12px)", md: 2 } }}>{children}</Box>
+        <Box component="main" id="main-content" tabIndex={-1} sx={{ display: "grid", gap: 2, minWidth: 0, p: { xs: 1.5, md: 2 }, pb: { xs: "calc(env(safe-area-inset-bottom) + 12px)", md: 2 } }}>{children}</Box>
       </Box>
     </Box>
   );
