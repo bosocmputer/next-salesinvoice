@@ -59,11 +59,11 @@ func NewRouter(
 	api.GET("/documents", deps.authMiddleware(), deps.documentsList)
 	api.GET("/documents/selectable-doc-nos", deps.authMiddleware(), deps.selectableDocumentNumbers)
 	api.POST("/documents/bulk/preview-change", deps.authMiddleware(), deps.bulkDocumentChangePreview)
-	api.POST("/documents/bulk/apply-change", deps.authMiddleware(), deps.requireRole("Admin"), deps.bulkDocumentChangeApply)
-	api.POST("/documents/rollback", deps.authMiddleware(), deps.requireRole("Admin"), deps.documentRollback)
+	api.POST("/documents/bulk/apply-change", deps.authMiddleware(), deps.requireRole("Admin"), deps.writeRateLimiter("bulk_apply", 30), deps.bulkDocumentChangeApply)
+	api.POST("/documents/rollback", deps.authMiddleware(), deps.requireRole("Admin"), deps.writeRateLimiter("rollback", 30), deps.documentRollback)
 	api.GET("/documents/:docNo/details", deps.authMiddleware(), deps.documentDetails)
 	api.POST("/documents/:docNo/preview-change", deps.authMiddleware(), deps.documentChangePreview)
-	api.POST("/documents/:docNo/apply-change", deps.authMiddleware(), deps.requireRole("Admin"), deps.documentChangeApply)
+	api.POST("/documents/:docNo/apply-change", deps.authMiddleware(), deps.requireRole("Admin"), deps.writeRateLimiter("doc_apply", 60), deps.documentChangeApply)
 	api.GET("/documents/running-number", deps.authMiddleware(), deps.runningNumber)
 	api.GET("/master/doc-formats", deps.authMiddleware(), deps.docFormats)
 	api.GET("/master/customers", deps.authMiddleware(), deps.customers)
@@ -670,6 +670,62 @@ func (d RouterDeps) loginRateLimiter() gin.HandlerFunc {
 			metrics.LoginAttemptsTotal.WithLabelValues("rate_limited").Inc()
 			c.Header("Retry-After", strconv.Itoa(retry))
 			response.Error(c, nethttp.StatusTooManyRequests, errorcode.Forbidden, "too many login attempts", "please wait before retrying")
+			c.Abort()
+			return
+		}
+		mu.Unlock()
+		c.Next()
+	}
+}
+
+// writeRateLimiter throttles write endpoints per authenticated user (fallback to IP).
+// Uses a rolling 1-minute window. Rejects requests beyond maxPerMin with HTTP 429.
+// Intended for high-risk routes (bulk-apply, single apply, rollback).
+func (d RouterDeps) writeRateLimiter(routeName string, maxPerMin int) gin.HandlerFunc {
+	const windowDuration = time.Minute
+	type bucket struct {
+		windowStart time.Time
+		count       int
+	}
+	var (
+		mu      sync.Mutex
+		buckets = make(map[string]*bucket)
+	)
+	return func(c *gin.Context) {
+		key := c.ClientIP()
+		if v, ok := c.Get("claims"); ok {
+			if cl, ok := v.(session.Claims); ok && cl.UserCode != "" {
+				key = "u:" + cl.UserCode
+			}
+		}
+		now := time.Now()
+		mu.Lock()
+		b, ok := buckets[key]
+		if !ok {
+			b = &bucket{windowStart: now}
+			buckets[key] = b
+		}
+		if len(buckets) > 4096 {
+			for k, v := range buckets {
+				if now.Sub(v.windowStart) > 10*time.Minute {
+					delete(buckets, k)
+				}
+			}
+		}
+		if now.Sub(b.windowStart) > windowDuration {
+			b.windowStart = now
+			b.count = 0
+		}
+		b.count++
+		if b.count > maxPerMin {
+			retry := int(windowDuration.Seconds() - now.Sub(b.windowStart).Seconds())
+			if retry < 1 {
+				retry = 1
+			}
+			mu.Unlock()
+			metrics.WriteRateLimitedTotal.WithLabelValues(routeName).Inc()
+			c.Header("Retry-After", strconv.Itoa(retry))
+			response.Error(c, nethttp.StatusTooManyRequests, errorcode.Forbidden, "too many write requests", "please slow down and retry shortly")
 			c.Abort()
 			return
 		}

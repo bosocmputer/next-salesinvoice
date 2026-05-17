@@ -51,3 +51,12 @@ var ClientEventsTotal = promauto.NewCounterVec(
 	},
 	[]string{"kind"},
 )
+
+// WriteRateLimitedTotal counts rate-limit rejections on write endpoints, by route.
+var WriteRateLimitedTotal = promauto.NewCounterVec(
+	prometheus.CounterOpts{
+		Name: "nsi_write_rate_limited_total",
+		Help: "Total write requests rejected by per-user/IP rate limiter, grouped by route.",
+	},
+	[]string{"route"},
+)
