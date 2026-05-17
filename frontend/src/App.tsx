@@ -161,162 +161,17 @@ import {
   valueChanged,
 } from "./lib/format";
 
-const LazyDataGrid = lazy(async () => {
-  const module = await import("@mui/x-data-grid");
-  return { default: module.DataGrid as ComponentType<DataGridProps<any>> };
-});
+import { appTheme } from "./theme";
+import { ToastProvider, useToast } from "./contexts/toast";
+import { LazyDataGrid, thaiGridLocaleText } from "./components/data-grid";
 
 const SystemStatusPage = lazy(() => import("./pages/SystemStatusPage"));
 const NotFoundPage = lazy(() => import("./pages/NotFoundPage"));
+const AuditLogPage = lazy(() => import("./pages/AuditLogPage"));
 
 const initialFromDate = "2026-01-01";
 const initialToDate = "2026-12-31";
 const drawerWidth = 260;
-const thaiGridLocaleText: NonNullable<DataGridProps<any>["localeText"]> = {
-  noRowsLabel: "ไม่พบข้อมูล",
-  footerTotalRows: "จำนวนแถวทั้งหมด:",
-  paginationRowsPerPage: "แถวต่อหน้า:",
-  paginationDisplayedRows: ({ from, to, count }) => `${from.toLocaleString("th-TH")}-${to.toLocaleString("th-TH")} จาก ${count === -1 ? `มากกว่า ${to.toLocaleString("th-TH")}` : count.toLocaleString("th-TH")}`,
-  paginationItemAriaLabel: (type) => {
-    if (type === "first") return "หน้าแรก";
-    if (type === "last") return "หน้าสุดท้าย";
-    if (type === "next") return "หน้าถัดไป";
-    return "หน้าก่อนหน้า";
-  },
-};
-
-const appTheme = createTheme({
-  typography: {
-    fontFamily: '"Noto Sans Thai", Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
-    fontSize: 14,
-    h1: { fontWeight: 700, letterSpacing: 0 },
-    h2: { fontWeight: 700, letterSpacing: 0 },
-    h5: { fontSize: "1.35rem", fontWeight: 700, letterSpacing: 0 },
-    h6: { fontSize: "1.05rem", fontWeight: 700, letterSpacing: 0 },
-    subtitle1: { fontSize: "0.95rem", fontWeight: 700, letterSpacing: 0 },
-    subtitle2: { fontSize: "0.875rem", fontWeight: 700, letterSpacing: 0 },
-    body2: { fontSize: "0.8125rem", letterSpacing: 0 },
-    caption: { fontSize: "0.75rem", letterSpacing: 0 },
-    button: { fontSize: "0.8125rem", fontWeight: 700, letterSpacing: 0, textTransform: "none" },
-  },
-  shape: {
-    borderRadius: 8,
-  },
-  palette: {
-    primary: {
-      main: "#245a6d",
-      contrastText: "#ffffff",
-    },
-    secondary: {
-      main: "#5f6f7d",
-    },
-    success: {
-      main: "#2e7d5b",
-    },
-    warning: {
-      main: "#a16207",
-    },
-    error: {
-      main: "#d04437",
-    },
-    background: {
-      default: "#f6f8fa",
-      paper: "#ffffff",
-    },
-    text: {
-      primary: "#1f2937",
-      secondary: "#667085",
-    },
-  },
-  components: {
-    MuiCssBaseline: {
-      styleOverrides: {
-        body: {
-          textRendering: "optimizeLegibility",
-          WebkitFontSmoothing: "antialiased",
-          MozOsxFontSmoothing: "grayscale",
-        },
-      },
-    },
-    MuiButton: {
-      defaultProps: { disableElevation: true },
-      styleOverrides: {
-        root: { borderRadius: 8, minHeight: 36 },
-        sizeSmall: { minHeight: 32 },
-      },
-    },
-    MuiTextField: {
-      defaultProps: { size: "small" },
-    },
-    MuiAutocomplete: {
-      defaultProps: { size: "small" },
-    },
-    MuiChip: {
-      styleOverrides: {
-        root: { fontSize: 12, fontWeight: 700 },
-      },
-    },
-    MuiAlert: {
-      styleOverrides: {
-        root: { borderRadius: 8 },
-        message: { minWidth: 0 },
-      },
-    },
-    MuiPaper: {
-      styleOverrides: {
-        root: { backgroundImage: "none" },
-      },
-    },
-    MuiCardContent: {
-      styleOverrides: {
-        root: {
-          "&:last-child": { paddingBottom: 16 },
-        },
-      },
-    },
-    MuiDialog: {
-      styleOverrides: {
-        paper: { borderRadius: 8, outline: "none" },
-      },
-    },
-    MuiDialogTitle: {
-      styleOverrides: {
-        root: { padding: "12px 16px" },
-      },
-    },
-    MuiDialogContent: {
-      styleOverrides: {
-        root: { padding: 16 },
-      },
-    },
-    MuiDialogActions: {
-      styleOverrides: {
-        root: { padding: 16 },
-      },
-    },
-    MuiTableCell: {
-      styleOverrides: {
-        body: {
-          fontSize: 13,
-        },
-        head: {
-          backgroundColor: "#f8fafc",
-          color: "#475467",
-          fontSize: 13,
-          fontWeight: 700,
-        },
-        sizeSmall: {
-          padding: "8px 12px",
-        },
-      },
-    },
-    MuiListItemButton: {
-      styleOverrides: {
-        root: { borderRadius: 8 },
-      },
-    },
-  },
-});
 
 const navItems: Array<{ key: PageKey; label: string; group: string; icon: typeof FileText; path: string; adminOnly?: boolean }> = [
   { key: "bulk", label: "แก้ไขบิล", group: "งานประจำ", icon: ListChecks, path: "/bulk-edit" },
@@ -337,40 +192,6 @@ export default function App() {
       </ThemeProvider>
     </AppErrorBoundary>
   );
-}
-
-type ToastState = { open: boolean; tone: ToastTone; message: string };
-const ToastContext = createContext<(message: string, tone?: ToastTone) => void>(() => undefined);
-
-function ToastProvider({ children }: { children: ReactNode }) {
-  const [toast, setToast] = useState<ToastState>({ open: false, tone: "info", message: "" });
-  const show = useCallback((message: string, tone: ToastTone = "info") => {
-    setToast({ open: true, tone, message });
-  }, []);
-  return (
-    <ToastContext.Provider value={show}>
-      {children}
-      <Snackbar
-        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
-        autoHideDuration={3500}
-        onClose={() => setToast((prev) => ({ ...prev, open: false }))}
-        open={toast.open}
-      >
-        <Alert
-          onClose={() => setToast((prev) => ({ ...prev, open: false }))}
-          severity={toast.tone}
-          sx={{ width: "100%" }}
-          variant="filled"
-        >
-          {toast.message}
-        </Alert>
-      </Snackbar>
-    </ToastContext.Provider>
-  );
-}
-
-function useToast() {
-  return useContext(ToastContext);
 }
 
 class AppErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
@@ -2354,9 +2175,10 @@ function PreviewRemovedLinesPanel({ lines, summaryLabel = "รวมที่จ
   );
 }
 
+const __removed_AuditLogPage_block_start_marker__: 0 = 0;
 const auditActionButtonSx = { fontSize: 11.75, fontWeight: 700, minHeight: 30, minWidth: 56, px: 0.65, whiteSpace: "nowrap" } as const;
 
-function AuditLogPage({ selectedDocNo, user }: { selectedDocNo: string; user: UserClaims }) {
+function __removed_inline_AuditLogPage({ selectedDocNo, user }: { selectedDocNo: string; user: UserClaims }) {
   const isMobile = useMediaQuery(appTheme.breakpoints.down("md"));
   const [histories, setHistories] = useState<DocumentHistoryItem[]>([]);
   const [docNo, setDocNo] = useState(selectedDocNo);
