@@ -54,8 +54,13 @@ import {
   SummaryLine,
 } from "../components/invoice-dialog";
 import { AppButton, EmptyState, StatusBadge } from "../components/ui";
+import { DocCode, SectionTitle, compactActionButtonSx } from "../components/ui/typography";
 
-const auditActionButtonSx = { fontSize: 11.75, fontWeight: 700, minHeight: 30, minWidth: 56, px: 0.65, whiteSpace: "nowrap" } as const;
+/**
+ * Local alias so existing call sites can continue using a stable name while we
+ * migrate inline `sx` blocks to the shared primitive.
+ */
+const auditActionButtonSx = compactActionButtonSx;
 
 export default function AuditLogPage({ selectedDocNo, user }: { selectedDocNo: string; user: UserClaims }) {
   void user;
@@ -76,21 +81,21 @@ export default function AuditLogPage({ selectedDocNo, user }: { selectedDocNo: s
       field: "snapshotId",
       headerName: "#",
       width: 60,
-      renderCell: (params) => <Typography sx={{ fontWeight: 700 }} variant="body2">#{params.row.snapshotId}</Typography>,
+      renderCell: (params) => <DocCode value={`#${params.row.snapshotId}`} />,
     },
     {
       field: "originalDocNo",
       headerName: "เลขเดิม",
       minWidth: 108,
       flex: 0.9,
-      renderCell: (params) => <Typography sx={{ fontWeight: 700 }} variant="body2">{params.row.originalDocNo}</Typography>,
+      renderCell: (params) => <DocCode value={params.row.originalDocNo} />,
     },
     {
       field: "currentDocNo",
       headerName: "เลขใหม่",
       minWidth: 108,
       flex: 0.9,
-      renderCell: (params) => <Typography color="primary.main" sx={{ fontWeight: 700 }} variant="body2">{params.row.currentDocNo || "-"}</Typography>,
+      renderCell: (params) => <DocCode value={params.row.currentDocNo || "-"} tone="primary" />,
     },
     {
       field: "createdBy",
@@ -195,7 +200,7 @@ export default function AuditLogPage({ selectedDocNo, user }: { selectedDocNo: s
       <Paper variant="outlined" sx={{ minWidth: 0, overflow: "hidden", p: 1.25 }}>
         <Stack spacing={1.5}>
           <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ alignItems: { sm: "center" }, justifyContent: "space-between" }}>
-            <Typography component="h2" sx={{ fontWeight: 700 }} variant="subtitle1">ประวัติการบันทึก</Typography>
+            <SectionTitle level="h2">ประวัติการบันทึก</SectionTitle>
             <Box sx={{ alignSelf: { xs: "flex-start", sm: "center" } }}>
               <StatusBadge>{loading ? "กำลังโหลด" : `${histories.length} รายการ`}</StatusBadge>
             </Box>
@@ -265,14 +270,12 @@ export default function AuditLogPage({ selectedDocNo, user }: { selectedDocNo: s
                   rows={histories}
                   sx={{
                     border: 0,
-                    fontSize: 13,
                     "& .MuiDataGrid-cell": {
                       alignItems: "center",
                       display: "flex",
                       py: 0.75,
                     },
                     "& .MuiDataGrid-columnHeaderTitle": {
-                      fontSize: 13,
                       fontWeight: 700,
                     },
                     "& .MuiDataGrid-cell:focus, & .MuiDataGrid-columnHeader:focus": {
@@ -345,7 +348,7 @@ function DocumentHistoryCard({
         <Stack direction={{ xs: "column", sm: "row" }} spacing={0.75} sx={{ justifyContent: "space-between" }}>
           <Box>
             <Typography color="text.secondary" variant="caption">Snapshot #{item.snapshotId}</Typography>
-            <Typography component="h3" sx={{ fontWeight: 700 }} variant="subtitle2">{item.originalDocNo} → {item.currentDocNo || "-"}</Typography>
+            <SectionTitle level="h3">{`${item.originalDocNo} → ${item.currentDocNo || "-"}`}</SectionTitle>
           </Box>
           <Stack direction="row" spacing={0.75}>
             <StatusBadge tone={documentHistoryStatusTone(item)}>{documentHistoryStatusLabel(item)}</StatusBadge>
@@ -394,9 +397,9 @@ function TechnicalJsonDialog({ item, onClose }: { item: DocumentHistoryItem; onC
     <Dialog fullScreen={isMobile} fullWidth maxWidth="lg" open onClose={onClose}>
       <DialogTitle sx={{ py: 1.25 }}>
         <Stack direction="row" spacing={1.25} sx={{ alignItems: "center", justifyContent: "space-between", minWidth: 0 }}>
-          <Typography component="h2" noWrap sx={{ fontWeight: 700, minWidth: 0 }} variant="subtitle1">
+          <SectionTitle level="h2" noWrap>
             ข้อมูลเทคนิค • Snapshot #{item.snapshotId} • {item.originalDocNo} → {item.currentDocNo || "-"}
-          </Typography>
+          </SectionTitle>
           <Stack direction="row" spacing={0.75} sx={{ alignItems: "center", flexShrink: 0 }}>
             <AppButton onClick={() => void copyActiveJson()} size="small" startIcon={<Copy size={14} />}>
               {copied ? "คัดลอกแล้ว" : "คัดลอก JSON"}

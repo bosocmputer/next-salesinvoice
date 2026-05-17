@@ -42,6 +42,7 @@ import {
 import type { DatabaseStatus, PageKey, UserClaims } from "./types";
 import { apiGet, apiPost, authExpiredEvent, authSessionKey } from "./lib/api";
 import { AppButton, PageLoading, SkeletonLine, StatusBadge } from "./components/ui";
+import { EmphasisText, SectionTitle } from "./components/ui/typography";
 import { legacyPathFromPage, pageFromPath, titleFromPath } from "./lib/format";
 
 import { appTheme } from "./theme";
@@ -266,8 +267,12 @@ function BrandLockup({ centered = false, subtitle, title }: { centered?: boolean
   return (
     <Stack direction={centered ? "column" : "row"} spacing={1.25} sx={{ alignItems: "center", textAlign: centered ? "center" : "left" }}>
       <Avatar sx={{ bgcolor: "primary.main", fontWeight: 800 }}>NS</Avatar>
-      <Box>
-        <Typography component={centered ? "h1" : "div"} sx={{ fontWeight: 800 }} variant={centered ? "h5" : "subtitle1"}>{title}</Typography>
+      <Box sx={{ minWidth: 0 }}>
+        {centered ? (
+          <Typography component="h1" sx={{ fontWeight: 800 }} variant="h5">{title}</Typography>
+        ) : (
+          <SectionTitle level="h2" noWrap>{title}</SectionTitle>
+        )}
         <Typography color="text.secondary" variant="body2">{subtitle}</Typography>
       </Box>
     </Stack>
@@ -390,7 +395,7 @@ function Shell({
       <Stack direction="row" spacing={1.25} sx={{ alignItems: "center", mt: "auto", pt: 2 }}>
         <Avatar sx={{ bgcolor: "primary.light", color: "primary.contrastText" }}>{user.displayName.slice(0, 1).toUpperCase()}</Avatar>
         <Box sx={{ minWidth: 0 }}>
-          <Typography noWrap sx={{ fontWeight: 800 }} variant="body2">{user.displayName}</Typography>
+          <EmphasisText noWrap>{user.displayName}</EmphasisText>
           <Typography color="text.secondary" noWrap variant="caption">{user.userCode}</Typography>
         </Box>
       </Stack>
@@ -480,14 +485,7 @@ function ShellHeader({
           >
             <MenuIcon size={20} />
           </IconButton>
-          <Typography
-            component="h1"
-            noWrap
-            sx={{ fontWeight: 800, minWidth: 0 }}
-            variant="subtitle1"
-          >
-            {title}
-          </Typography>
+          <SectionTitle level="h2" noWrap>{title}</SectionTitle>
         </Stack>
         <Stack direction="row" spacing={{ xs: 0.5, sm: 0.75 }} sx={{ alignItems: "center", flexShrink: 0, minWidth: 0 }}>
           <DatabaseIndicator databaseReady={databaseReady} database={status?.database || "-"} />
@@ -503,6 +501,17 @@ function ShellHeader({
   );
 }
 
+/**
+ * Database status chip shown in the app header. Three responsive variants:
+ *   xs:  short text only ("DB พร้อม" / "DB มีปัญหา")
+ *   sm:  full localized label
+ *   md+: label · database name (truncated)
+ *
+ * Replaces four duplicated `Typography sx={{ fontSize: 12, fontWeight: 800 }}`
+ * blocks with a single shared style fragment.
+ */
+const DB_INDICATOR_LABEL_SX = { fontSize: 12, fontWeight: 800 } as const;
+
 function DatabaseIndicator({ databaseReady, database }: { databaseReady: boolean; database: string }) {
   const label = databaseReady ? "พร้อมใช้งาน" : "ฐานข้อมูลมีปัญหา";
   return (
@@ -510,10 +519,10 @@ function DatabaseIndicator({ databaseReady, database }: { databaseReady: boolean
       color={databaseReady ? "success" : "error"}
       label={
         <Stack component="span" direction="row" spacing={0.5} sx={{ alignItems: "center", minWidth: 0 }}>
-          <Typography component="span" sx={{ display: { xs: "none", sm: "inline" }, fontSize: 12, fontWeight: 800 }}>
+          <Typography component="span" sx={{ display: { xs: "none", sm: "inline" }, ...DB_INDICATOR_LABEL_SX }}>
             {label}
           </Typography>
-          <Typography component="span" sx={{ display: { xs: "inline", sm: "none" }, fontSize: 12, fontWeight: 800 }}>
+          <Typography component="span" sx={{ display: { xs: "inline", sm: "none" }, ...DB_INDICATOR_LABEL_SX }}>
             {databaseReady ? "DB พร้อม" : "DB มีปัญหา"}
           </Typography>
           <Typography component="span" sx={{ display: { xs: "none", md: "inline" }, fontSize: 12, opacity: 0.72 }}>

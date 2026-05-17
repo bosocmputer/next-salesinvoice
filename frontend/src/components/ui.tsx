@@ -80,7 +80,7 @@ export function EmptyState({ title, description, action }: { title: string; desc
       sx={{ alignItems: "center", display: "grid", gap: 1, justifyItems: "center", minHeight: 160, p: 3, textAlign: "center" }}
     >
       <AlertTriangle size={22} />
-      <Typography sx={{ fontWeight: 700 }}>{title}</Typography>
+      <Typography sx={{ fontWeight: 700 }} variant="body2">{title}</Typography>
       <Typography color="text.secondary" variant="body2">{description}</Typography>
       {action}
     </Paper>

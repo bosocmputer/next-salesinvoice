@@ -13,6 +13,7 @@ import { CheckCircle2, ChevronLeft, ClipboardCheck, Database, RefreshCw, ShieldC
 import type { DatabaseStatus } from "../types";
 import { apiPost } from "../lib/api";
 import { AppButton, MetricCard, PageHeader, StatusBadge } from "../components/ui";
+import { EmphasisText, SectionTitle } from "../components/ui/typography";
 
 export default function SystemStatusPage({ status, onRefresh }: { status: DatabaseStatus | null; onRefresh: () => Promise<void> }) {
   const navigate = useNavigate();
@@ -156,14 +157,14 @@ function StatusChecklist({ status }: { status: DatabaseStatus | null }) {
       <Stack spacing={2}>
         <Box>
           <Typography color="text.secondary" variant="body2">ตรวจความพร้อม</Typography>
-          <Typography component="h2" sx={{ fontWeight: 700 }} variant="h6">รายการตรวจสอบ</Typography>
+          <SectionTitle level="h2">รายการตรวจสอบ</SectionTitle>
         </Box>
         <Stack spacing={1}>
           {rows.map((row) => (
             <Paper key={row.label} variant="outlined" sx={{ alignItems: "center", display: "flex", gap: 1.5, p: 1.5 }}>
               <StatusBadge tone={row.ok ? "success" : "danger"}>{row.ok ? "ผ่าน" : "ต้องตรวจสอบ"}</StatusBadge>
               <Box>
-                <Typography sx={{ fontWeight: 700 }} variant="body2">{row.label}</Typography>
+                <EmphasisText>{row.label}</EmphasisText>
                 <Typography color="text.secondary" variant="caption">{row.detail}</Typography>
               </Box>
             </Paper>
@@ -187,7 +188,7 @@ function MissingTablesPanel({ description, severity, tables, title }: { descript
       <Stack spacing={1}>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ alignItems: { sm: "center" }, justifyContent: "space-between" }}>
           <Box>
-            <Typography component="h2" sx={{ fontWeight: 700 }} variant="subtitle1">{title}</Typography>
+            <SectionTitle level="h2">{title}</SectionTitle>
             <Typography color="text.secondary" variant="caption">{description}</Typography>
           </Box>
           <StatusBadge tone={severity === "error" ? "danger" : "neutral"}>{tables.length} ตาราง</StatusBadge>

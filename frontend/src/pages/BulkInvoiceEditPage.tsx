@@ -66,6 +66,7 @@ import {
   valueChanged,
 } from "../lib/format";
 import { AppButton, EmptyState, MetricValue, PageLoading, StatusBadge } from "../components/ui";
+import { DocCode, EmphasisText, Money, SectionTitle, compactActionButtonSx } from "../components/ui/typography";
 import {
   DocumentFact,
   DocumentLinesPanel,
@@ -193,7 +194,7 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
       headerName: "เลขที่เอกสาร",
       minWidth: 136,
       flex: 0.9,
-      renderCell: (params) => <Typography sx={{ fontWeight: 700 }} variant="body2">{params.row.docNo}</Typography>,
+      renderCell: (params) => <DocCode value={params.row.docNo} />,
     },
     {
       field: "customerCode",
@@ -218,7 +219,7 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
       headerAlign: "right",
       headerName: "ยอดสุทธิ",
       width: 112,
-      renderCell: (params) => <Typography sx={{ fontWeight: 700 }} variant="body2">{formatMoney(params.row.totalAmount)}</Typography>,
+      renderCell: (params) => <Money value={formatMoney(params.row.totalAmount)} />,
     },
     {
       align: "right",
@@ -236,7 +237,7 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
             setDetailOpen(true);
           }}
           size="small"
-          sx={{ fontSize: 12, fontWeight: 700, minHeight: 30, px: 0.75 }}
+          sx={compactActionButtonSx}
           type="button"
         >
           ดูรายละเอียด
@@ -473,7 +474,7 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
       <Paper variant="outlined" sx={{ minWidth: 0, overflow: "hidden" }}>
         <Stack spacing={{ xs: 1.25, sm: 1.5 }} sx={{ p: { xs: 1.25, sm: 1.5 } }}>
           <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ alignItems: { xs: "flex-start", sm: "center" }, justifyContent: "space-between" }}>
-	            <Typography component="h2" sx={{ fontWeight: 700 }} variant="h6">รายการบิล</Typography>
+	            <SectionTitle level="h2">รายการบิล</SectionTitle>
             <StatusBadge>{loading ? "กำลังโหลด" : `${items.length}${documents?.hasMore ? "+" : ""} บิลที่แสดง`}</StatusBadge>
           </Stack>
           <Box sx={{ alignItems: "flex-start", display: "grid", gap: 1, gridTemplateColumns: { xs: "1fr 1fr", lg: "150px 150px minmax(220px, 1fr) auto" }, minWidth: 0 }}>
@@ -555,11 +556,11 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
                         <Stack direction="row" spacing={1} sx={{ minWidth: 0 }}>
                           <Checkbox checked={selected} size="small" sx={{ p: 0.25 }} />
                           <Box sx={{ minWidth: 0 }}>
-                            <Typography noWrap sx={{ fontWeight: 800 }} variant="body1">{item.docNo}</Typography>
+                            <DocCode value={item.docNo} noWrap sx={{ fontSize: "0.95rem" }} />
                             <Typography color="text.secondary" variant="caption">{formatSmlDate(item.docDate)} · {formatDocumentTime(item.docTime)}</Typography>
                           </Box>
                         </Stack>
-                        <Typography color="primary.main" sx={{ fontWeight: 800, whiteSpace: "nowrap" }} variant="body2">{formatMoney(item.totalAmount)}</Typography>
+                        <Money value={formatMoney(item.totalAmount)} noWrap />
                       </Stack>
                       <Box sx={{ display: "grid", gap: 1, gridTemplateColumns: "1fr 1fr" }}>
                         <SummaryLine label="ลูกหนี้" value={item.customerCode || "-"} />
@@ -616,14 +617,12 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
               rows={items}
               sx={{
                 border: 0,
-                fontSize: 13,
                 "& .MuiDataGrid-cell": {
                   alignItems: "center",
                   display: "flex",
                   py: 0.5,
                 },
                 "& .MuiDataGrid-columnHeaderTitle": {
-                  fontSize: 13,
                   fontWeight: 700,
                 },
                 "& .MuiDataGrid-row": {
@@ -659,9 +658,9 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
         <Dialog fullScreen={isMobile} fullWidth maxWidth="sm" open onClose={() => setSettingsOpen(false)}>
           <DialogTitle sx={{ py: 1.25 }}>
             <Stack direction="row" spacing={1.5} sx={{ alignItems: "center", justifyContent: "space-between", minWidth: 0 }}>
-              <Typography component="h2" noWrap sx={{ fontWeight: 700, minWidth: 0 }} variant="subtitle1">
+              <SectionTitle level="h2" noWrap>
                 ตั้งค่าการแก้ไข
-              </Typography>
+              </SectionTitle>
               <StatusBadge>{selectedDocNos.length} บิล</StatusBadge>
             </Stack>
           </DialogTitle>
@@ -713,7 +712,7 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
                     return (
                       <Box component="li" key={key} {...optionProps}>
                         <Box>
-                          <Typography sx={{ fontWeight: 800 }} variant="body2">{option.code}</Typography>
+                          <DocCode value={option.code} />
                           <Typography color="text.secondary" variant="caption">{option.name}</Typography>
                         </Box>
                       </Box>
@@ -795,7 +794,7 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
                     return (
                       <Box component="li" key={key} {...optionProps}>
                         <Box>
-                          <Typography sx={{ fontWeight: 800 }} variant="body2">{option.code}</Typography>
+                          <DocCode value={option.code} />
                           <Typography color="text.secondary" variant="caption">{option.name}</Typography>
                         </Box>
                       </Box>
@@ -838,7 +837,7 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
           <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ justifyContent: "space-between" }}>
             <Box>
               <Typography color="text.secondary" variant="body2">3. พรีวิวก่อนส่ง</Typography>
-              <Typography component="h2" sx={{ fontWeight: 700 }} variant="h6">พรีวิว {preview.totalCount} บิล</Typography>
+              <SectionTitle level="h2">พรีวิว {preview.totalCount} บิล</SectionTitle>
             </Box>
           </Stack>
           <Box sx={{ display: "grid", gap: 1.5, gridTemplateColumns: { xs: "1fr", md: "repeat(3, 1fr)" } }}>
@@ -861,8 +860,8 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
                   <CardContent sx={{ p: 1.5, "&:last-child": { pb: 1.5 } }}>
                     <Stack spacing={1.25}>
                       <Stack direction="row" sx={{ alignItems: "center", justifyContent: "space-between" }}>
-                        <Typography noWrap sx={{ fontWeight: 800 }} variant="body2">{item.docNo}</Typography>
-                        <Typography color="primary.main" sx={{ fontWeight: 800 }} variant="body2">{formatMoney(item.preview?.totals.totalAmount || "")}</Typography>
+                        <DocCode value={item.docNo} noWrap />
+                        <Money value={formatMoney(item.preview?.totals.totalAmount || "")} />
                       </Stack>
                       <Box sx={{ display: "grid", gap: 1, gridTemplateColumns: "1fr 1fr" }}>
                         <SummaryLine label="เลขเดิม" value={item.docNo} strong />
@@ -905,11 +904,11 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
               <TableBody>
                 {visiblePreviewItems.map((item) => (
                   <TableRow key={item.docNo}>
-                    <TableCell><Typography sx={{ fontWeight: 800 }} variant="body2">{item.docNo}</Typography></TableCell>
+                    <TableCell><DocCode value={item.docNo} /></TableCell>
                     <TableCell>{item.newDocNo || "-"}</TableCell>
                     <TableCell>{item.preview?.after.customerCode || selectedCustomer || "-"}</TableCell>
                     <TableCell>{(item.removeHits || []).length ? item.removeHits.join(", ") : "-"}</TableCell>
-                    <TableCell align="right"><Typography sx={{ fontWeight: 800 }} variant="body2">{formatMoney(item.preview?.totals.totalAmount || "")}</Typography></TableCell>
+                    <TableCell align="right"><Money value={formatMoney(item.preview?.totals.totalAmount || "")} /></TableCell>
                     <TableCell>{item.message}</TableCell>
                     <TableCell align="right">
                       <AppButton
@@ -944,7 +943,7 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
             )}
             sx={{ "& .MuiAlert-action": { alignItems: "stretch", pl: { xs: 0, sm: 2 }, width: { xs: "100%", sm: "auto" } }, flexDirection: { xs: "column", sm: "row" } }}
           >
-            <Typography sx={{ fontWeight: 700 }} variant="body2">{isAdmin ? "สรุปก่อนส่งเข้า SML" : "สรุปผลพรีวิว"}</Typography>
+            <EmphasisText>{isAdmin ? "สรุปก่อนส่งเข้า SML" : "สรุปผลพรีวิว"}</EmphasisText>
             <Typography variant="body2">
               {isAdmin
                 ? `ส่งเข้า SML ได้ ${writablePreviewCount} บิล จากทั้งหมด ${preview.totalCount} บิล${blockedPreviewCount ? `, ระบบไม่ส่ง ${blockedPreviewCount} บิล` : ""}, ลูกหนี้ใหม่ ${selectedCustomer || "-"}, ชุดเลข ${selectedFormat || "-"}`
@@ -1073,8 +1072,8 @@ function BulkPreviewDialog({
       <DialogTitle sx={{ py: 1.25 }}>
         <Stack direction="row" spacing={1.25} sx={{ alignItems: "center", justifyContent: "space-between", minWidth: 0 }}>
           <Stack direction="row" spacing={1} sx={{ alignItems: "center", minWidth: 0 }}>
-            <Typography component="h2" noWrap sx={{ fontWeight: 700, minWidth: 0 }} variant="subtitle1">พรีวิวก่อนส่งเข้า SML</Typography>
-            <Typography color="primary.main" noWrap sx={{ fontWeight: 800 }} variant="subtitle1">{result.totalCount === 1 ? selectedItem?.docNo || "1 บิล" : `${selectedIndex + 1}/${result.totalCount}`}</Typography>
+            <SectionTitle level="h2" noWrap>พรีวิวก่อนส่งเข้า SML</SectionTitle>
+            <EmphasisText noWrap primary>{result.totalCount === 1 ? selectedItem?.docNo || "1 บิล" : `${selectedIndex + 1}/${result.totalCount}`}</EmphasisText>
           </Stack>
           <Stack direction="row" spacing={0.75} sx={{ alignItems: "center", flexShrink: 0 }}>
             <IconButton aria-label="ปิดพรีวิว" disabled={busy} onClick={onClose} type="button">
@@ -1118,7 +1117,7 @@ function BulkPreviewDialog({
 
               {selectedItem && !selectedIsWritable ? (
                 <Alert severity="warning">
-                  <Typography sx={{ fontWeight: 700 }} variant="body2">เอกสารนี้ระบบจะไม่ส่งเข้า SML</Typography>
+                  <EmphasisText>เอกสารนี้ระบบจะไม่ส่งเข้า SML</EmphasisText>
                   {selectedItem.message || "เลือกเอกสารถัดไปเพื่อดูรายการที่ส่งได้"}
                 </Alert>
               ) : null}
@@ -1146,7 +1145,7 @@ function BulkPreviewDialog({
                   <Stack spacing={1.5}>
                     <Paper variant="outlined" sx={{ ...changedPaperSx(valueChanged(selectedPreview.after.remark, selectedPreview.before.remark)), p: 1.25 }}>
                       <Typography color="text.secondary" variant="caption">หมายเหตุหลังแก้ไข</Typography>
-                      <Typography sx={{ fontWeight: 700 }} variant="body2">{maskInternalRemark(selectedPreview.after.remark) || "ไม่มีหมายเหตุ"}</Typography>
+                      <EmphasisText>{maskInternalRemark(selectedPreview.after.remark) || "ไม่มีหมายเหตุ"}</EmphasisText>
                       {valueChanged(selectedPreview.after.remark, selectedPreview.before.remark) ? (
                         <Typography color="text.secondary" sx={{ display: "block", mt: 0.25 }} variant="caption">เดิม: {maskInternalRemark(selectedPreview.before.remark) || "ไม่มีหมายเหตุ"}</Typography>
                       ) : null}
@@ -1199,7 +1198,7 @@ function PreviewLoadingDialog({
     <Dialog fullScreen={isMobile} fullWidth maxWidth="xs" open>
       <DialogTitle sx={{ py: 1.25 }}>
         <Stack direction="row" spacing={1} sx={{ alignItems: "center", justifyContent: "space-between", minWidth: 0 }}>
-          <Typography component="h2" noWrap sx={{ fontWeight: 700, minWidth: 0 }} variant="subtitle1">กำลังสร้างพรีวิวก่อนส่ง</Typography>
+          <SectionTitle level="h2" noWrap>กำลังสร้างพรีวิวก่อนส่ง</SectionTitle>
           <StatusBadge>{docCount} บิล</StatusBadge>
         </Stack>
       </DialogTitle>
@@ -1248,7 +1247,7 @@ function BulkReviewQueuePanel({
     >
       <Stack spacing={1} sx={{ borderBottom: 1, borderColor: "divider", p: 1 }}>
         <Stack direction="row" spacing={1} sx={{ alignItems: "center", justifyContent: "space-between" }}>
-          <Typography sx={{ fontWeight: 700 }} variant="body2">เอกสารในชุดนี้</Typography>
+          <EmphasisText>เอกสารในชุดนี้</EmphasisText>
           <Typography color="text.secondary" variant="caption">{items.length} เอกสาร</Typography>
         </Stack>
       </Stack>
@@ -1275,10 +1274,10 @@ function BulkReviewQueuePanel({
               }}
             >
               <Stack spacing={0.75}>
-                <Typography noWrap sx={{ fontWeight: 800 }} variant="body2">{item.docNo} → {item.newDocNo || "-"}</Typography>
+                <DocCode value={`${item.docNo} → ${item.newDocNo || "-"}`} noWrap />
                 <Stack direction="row" spacing={1} sx={{ justifyContent: "space-between" }}>
                   <Typography color="text.secondary" noWrap variant="caption">ลูกหนี้ {customerCode}</Typography>
-                  <Typography color="primary.main" noWrap sx={{ fontWeight: 800 }} variant="caption">{totalAmount}</Typography>
+                  <Typography color="primary.main" noWrap sx={{ fontVariantNumeric: "tabular-nums", fontWeight: 800 }} variant="caption">{totalAmount}</Typography>
                 </Stack>
               </Stack>
             </Button>
@@ -1330,7 +1329,7 @@ function SelectionActionBar({
       <Stack direction={{ xs: "column", md: "row" }} spacing={1} sx={{ alignItems: { md: "center" }, justifyContent: "space-between", minWidth: 0 }}>
         <Stack spacing={0.75} sx={{ minWidth: 0 }}>
           <Stack direction="row" spacing={1} sx={{ alignItems: "center", flexWrap: "wrap" }}>
-            <Typography sx={{ fontWeight: 800 }} variant="body2">เลือก {selectedCount} บิลแล้ว</Typography>
+            <EmphasisText>เลือก {selectedCount} บิลแล้ว</EmphasisText>
             {canPreview ? <StatusBadge tone="success">พร้อมพรีวิว</StatusBadge> : <StatusBadge>ยังไม่ได้ตั้งค่า</StatusBadge>}
           </Stack>
           {chips.length ? (
@@ -1375,7 +1374,7 @@ function PreviewChangeSummaryPanel({ preview }: { preview: DocumentChangePreview
       <Stack spacing={1.25}>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ alignItems: { sm: "center" }, justifyContent: "space-between" }}>
           <Box sx={{ minWidth: 0 }}>
-            <Typography sx={{ fontWeight: 700 }} variant="body2">จุดเปลี่ยนที่ต้องโฟกัส</Typography>
+            <EmphasisText>จุดเปลี่ยนที่ต้องโฟกัส</EmphasisText>
             <Typography color="text.secondary" variant="caption">ช่องที่มีพื้นหลังสีอ่อนคือข้อมูลที่ระบบจะเปลี่ยนก่อนส่งเข้า SML</Typography>
           </Box>
           <Stack direction="row" spacing={0.75} sx={{ flexWrap: "wrap" }}>
@@ -1408,10 +1407,10 @@ function PreviewChangedFact({ change }: { change: PreviewChangeItem }) {
         <Stack direction="row" spacing={0.75} sx={{ alignItems: "baseline", minWidth: 0 }}>
           <Typography color="text.secondary" noWrap sx={{ textDecoration: "line-through" }} variant="body2">{change.before}</Typography>
           <Typography color="text.secondary" variant="caption">→</Typography>
-          <Typography color={change.tone === "danger" ? "error.main" : "text.primary"} noWrap sx={{ fontWeight: 800 }} variant="body2">{change.after}</Typography>
+          <Typography color={change.tone === "danger" ? "error.main" : "text.primary"} noWrap sx={{ fontVariantNumeric: "tabular-nums", fontWeight: 800 }} variant="body2">{change.after}</Typography>
         </Stack>
       ) : (
-        <Typography color="text.primary" noWrap sx={{ fontWeight: 700 }} variant="body2">{change.after}</Typography>
+        <EmphasisText noWrap>{change.after}</EmphasisText>
       )}
     </Paper>
   );
