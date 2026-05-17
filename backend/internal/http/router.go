@@ -216,9 +216,22 @@ func (d RouterDeps) bulkDocumentChangeApply(c *gin.Context) {
 	claims := c.MustGet("claims").(session.Claims)
 	result, err := d.state.Current().Documents.BulkApplyChange(c.Request.Context(), req, claims.UserCode)
 	if err != nil {
+		metrics.BulkApplyDocumentsTotal.WithLabelValues("error").Add(float64(len(req.DocNos)))
 		d.writeDocumentAudit(c, claims, "bulk.apply_change_failed", "bulk", gin.H{"request": req}, gin.H{"error": err.Error()})
 		response.Error(c, nethttp.StatusBadRequest, errorcode.InvalidInput, "apply bulk document change failed", err.Error())
 		return
+	}
+	if result.AppliedCount > 0 {
+		metrics.BulkApplyDocumentsTotal.WithLabelValues("applied").Add(float64(result.AppliedCount))
+	}
+	if result.FailedCount > 0 {
+		metrics.BulkApplyDocumentsTotal.WithLabelValues("failed").Add(float64(result.FailedCount))
+	}
+	if result.BlockedCount > 0 {
+		metrics.BulkApplyDocumentsTotal.WithLabelValues("blocked").Add(float64(result.BlockedCount))
+	}
+	if result.SkippedCount > 0 {
+		metrics.BulkApplyDocumentsTotal.WithLabelValues("skipped").Add(float64(result.SkippedCount))
 	}
 	d.writeDocumentAudit(c, claims, "bulk.apply_change", "bulk", gin.H{"request": req}, gin.H{
 		"totalCount":   result.TotalCount,
