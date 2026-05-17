@@ -1,6 +1,6 @@
 # next-salesinvoice Session Handoff
 
-Last updated: 2026-05-16 Asia/Bangkok
+Last updated: 2026-05-17 Asia/Bangkok
 
 ไฟล์นี้คือ checkpoint ล่าสุดสำหรับเปิด chat ใหม่หรือส่งต่อให้ AI ตัวอื่นทำงานต่อ อ่านคู่กับ `README.md` ก่อนแก้โค้ดเสมอ
 
@@ -62,6 +62,28 @@ App-owned tables:
 - `EMP001 / 1234`: Admin when `erp_user.title = admin`
 - Admin can apply changes, rollback, view audit, and run system setup actions
 - Normal users can view/search but cannot perform protected write/admin actions
+
+## Frontend Module Layout (post-refactor, 2026-05-17)
+
+- `frontend/src/App.tsx` (532 บรรทัด) — เก็บเฉพาะ root component, AppErrorBoundary, AppRoutes, AuthShell, BrandLockup, BootScreen, LoginScreen, Shell, ShellHeader, DatabaseIndicator
+- `frontend/src/pages/` — lazy-loaded ทุกหน้า
+  - `SystemStatusPage.tsx`, `NotFoundPage.tsx`, `AuditLogPage.tsx`, `BulkInvoiceEditPage.tsx`
+- `frontend/src/components/`
+  - `ui/` — AppButton, EmptyState, MetricCard, MetricValue, PageHeader, PageLoading, SkeletonLine, StackRow, StatusBadge
+  - `invoice-dialog.tsx` — InvoiceDetailDialog, DocumentLinesPanel, PreviewRemovedLinesPanel, RiskConfirmDialog, SummaryLine, DocumentFact, TotalLine, ChangedValue (shared chunk ~19.55 kB)
+  - `data-grid.tsx` — LazyDataGrid + thaiGridLocaleText
+- `frontend/src/contexts/toast.tsx` — ToastProvider/useToast
+- `frontend/src/theme.ts` — appTheme
+- `frontend/src/lib/` — `api.ts`, `format.ts` (shared helpers)
+
+Bundle (vite build):
+
+- `index` main chunk: 33.91 kB (เคย ~95 kB ก่อน refactor)
+- `BulkInvoiceEditPage`: 41.84 kB
+- `AuditLogPage`: 17.85 kB
+- `SystemStatusPage`, `NotFoundPage`: < 5 kB each
+
+Commit ที่สำคัญในรอบนี้: `e4d4019` (cleanup), `6db3bba` (BulkInvoiceEditPage extract), `e478cfc` (AuditLogPage extract), `1d781d9` (SystemStatus + NotFound pilot)
 
 ## Latest UX/UI State
 
