@@ -6,19 +6,22 @@
 
 ## สถานะล่าสุด
 
-อัปเดตล่าสุด: 2026-05-16 Asia/Bangkok
+อัปเดตล่าสุด: 2026-05-18 Asia/Bangkok
 
 - Backend: Go + Gin + pgx/PostgreSQL
-- Frontend: React + Vite + Material UI (`@mui/material`, `@mui/x-data-grid`) และ `@uiw/react-json-view`
+- Frontend: React + Vite + Material UI v9 + `@uiw/react-json-view`
 - UI หลักอยู่ที่ `/bulk-edit`, `/audit`, `/system/status`
-- ใช้ Material UI components เป็นหลัก และถอดระบบ utility/custom UI เก่าออกจาก flow ปัจจุบันแล้ว
+- Typography primitives (`SectionTitle`, `DocCode`, `Money`, ...) รวมอยู่ที่ `frontend/src/components/ui/typography.tsx`
+- Mobile responsive: 44px tap target, dialogs fullScreen บน xs, DataGrid ถูกแทนด้วย card view บน xs
+- Accessibility: skip-link, focus ring, `prefers-reduced-motion`, axe-core smoke 0 violations
 - `GET /api/v1/system/database-status` เป็น read-only verify
 - การสร้างตาราง `nsi_*` ต้องเป็น Admin action ผ่าน `POST /api/v1/system/database-migrate`
 - การตั้งค่า database connection บังคับผ่าน `.env` เท่านั้น ไม่มี UI สำหรับเปลี่ยน runtime
+- Production deploy ผ่าน HTTPS เท่านั้น (Secure cookie); LAN HTTP เข้าระบบไม่ได้
 - Verification ล่าสุดใน session นี้:
   - `npm run build`: Pass
   - `go test ./...`: Pass
-  - Browser QA `/system/status` desktop/mobile/mock missing tables: Pass
+  - Playwright + axe-core (`frontend/tests/e2e/a11y.spec.ts`): 0 violations
 
 ## ใช้ทำอะไร
 
@@ -170,11 +173,7 @@ System:
 
 - `GET /api/v1/health`
 - `GET /api/v1/system/database-status`
-- `POST /api/v1/system/database-verify`
 - `POST /api/v1/system/database-migrate`
-- `GET /api/v1/system/database-config`
-- `PUT /api/v1/system/database-config`
-- `POST /api/v1/system/database-reconnect`
 
 Auth:
 

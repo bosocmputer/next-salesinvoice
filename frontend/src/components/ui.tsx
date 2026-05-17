@@ -12,7 +12,7 @@ import {
   Typography,
   type ButtonProps,
 } from "@mui/material";
-import { AlertTriangle, CheckCircle2, Circle, XCircle, type LucideIcon } from "lucide-react";
+import { AlertTriangle, CheckCircle2, XCircle, type LucideIcon } from "lucide-react";
 
 export function AppButton({
   tone = "secondary",
@@ -61,11 +61,13 @@ export function LiveRegion({ children, assertive = false }: { children: ReactNod
 
 export function StatusBadge({ children, tone = "neutral" }: { children: ReactNode; tone?: "neutral" | "success" | "danger" }) {
   const color = tone === "success" ? "success" : tone === "danger" ? "error" : "default";
-  const Icon = tone === "success" ? CheckCircle2 : tone === "danger" ? XCircle : Circle;
+  // Only show an icon when the badge conveys actual state (success/danger).
+  // Neutral badges are count/info chips — an empty Circle icon would be visual noise.
+  const Icon = tone === "success" ? CheckCircle2 : tone === "danger" ? XCircle : null;
   return (
     <Chip
       color={color}
-      icon={<Icon aria-hidden size={14} />}
+      icon={Icon ? <Icon aria-hidden size={14} /> : undefined}
       label={children}
       size="small"
       variant={tone === "neutral" ? "outlined" : "filled"}

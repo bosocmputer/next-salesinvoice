@@ -1,6 +1,6 @@
 # next-salesinvoice Session Handoff
 
-Last updated: 2026-05-17 Asia/Bangkok
+Last updated: 2026-05-18 Asia/Bangkok
 
 ไฟล์นี้คือ checkpoint ล่าสุดสำหรับเปิด chat ใหม่หรือส่งต่อให้ AI ตัวอื่นทำงานต่อ อ่านคู่กับ `README.md` ก่อนแก้โค้ดเสมอ
 
@@ -63,27 +63,30 @@ App-owned tables:
 - Admin can apply changes, rollback, view audit, and run system setup actions
 - Normal users can view/search but cannot perform protected write/admin actions
 
-## Frontend Module Layout (post-refactor, 2026-05-17)
+## Frontend Module Layout (post-refactor, 2026-05-18)
 
-- `frontend/src/App.tsx` (532 บรรทัด) — เก็บเฉพาะ root component, AppErrorBoundary, AppRoutes, AuthShell, BrandLockup, BootScreen, LoginScreen, Shell, ShellHeader, DatabaseIndicator
+- `frontend/src/App.tsx` — root component, AppErrorBoundary, AppRoutes, AuthShell, BrandLockup, BootScreen, LoginScreen, Shell, ShellHeader, DatabaseIndicator
 - `frontend/src/pages/` — lazy-loaded ทุกหน้า
   - `SystemStatusPage.tsx`, `NotFoundPage.tsx`, `AuditLogPage.tsx`, `BulkInvoiceEditPage.tsx`
 - `frontend/src/components/`
-  - `ui/` — AppButton, EmptyState, MetricCard, MetricValue, PageHeader, PageLoading, SkeletonLine, StackRow, StatusBadge
-  - `invoice-dialog.tsx` — InvoiceDetailDialog, DocumentLinesPanel, PreviewRemovedLinesPanel, RiskConfirmDialog, SummaryLine, DocumentFact, TotalLine, ChangedValue (shared chunk ~19.55 kB)
+  - `ui.tsx` — AppButton, EmptyState, MetricCard, MetricValue, PageHeader, PageLoading, SkeletonLine, StatusBadge, LiveRegion
+  - `ui/typography.tsx` — SectionTitle, FieldLabel, DocCode, Money, MoneyTotal, EmphasisText, WEIGHT, `compactActionButtonSx`
+  - `ui/index.ts` — barrel
+  - `invoice-dialog.tsx` — InvoiceDetailDialog และชิ้นส่วนจอง dialog (shared chunk)
   - `data-grid.tsx` — LazyDataGrid + thaiGridLocaleText
-- `frontend/src/contexts/toast.tsx` — ToastProvider/useToast
-- `frontend/src/theme.ts` — appTheme
-- `frontend/src/lib/` — `api.ts`, `format.ts` (shared helpers)
+- `frontend/src/contexts/toast.tsx` — ToastProvider/useToast (Alert role)
+- `frontend/src/theme.ts` — appTheme + design tokens (`TOUCH_TARGET_MIN_PX=44`, `DESKTOP_CONTROL_HEIGHT_PX=36`)
+- `frontend/src/lib/` — `api.ts`, `format.ts` (singleton Intl formatters), `titleFromPath`
+- `frontend/tests/e2e/a11y.spec.ts` — Playwright + axe-core smoke (login + bulk-edit)
 
 Bundle (vite build):
 
-- `index` main chunk: 33.91 kB (เคย ~95 kB ก่อน refactor)
-- `BulkInvoiceEditPage`: 41.84 kB
-- `AuditLogPage`: 17.85 kB
+- `index` main chunk: ~34 kB
+- `BulkInvoiceEditPage`: ~42 kB
+- `AuditLogPage`: ~18 kB
 - `SystemStatusPage`, `NotFoundPage`: < 5 kB each
 
-Commit ที่สำคัญในรอบนี้: `e4d4019` (cleanup), `6db3bba` (BulkInvoiceEditPage extract), `e478cfc` (AuditLogPage extract), `1d781d9` (SystemStatus + NotFound pilot)
+Commit หลักรอบ UX/A11y ล่าสุด: typography primitives → mobile responsive (44px tap target, fullScreen dialog, card view) → a11y (skip-link, focus ring, prefers-reduced-motion, LiveRegion, axe smoke) → 404 title fix + SystemStatus responsive grid → StatusBadge ไม่รัน icon บน neutral tone (ลบ empty Circle noise)
 
 ## Latest UX/UI State
 
@@ -160,17 +163,15 @@ Passed in this session:
 - `npm run build`
 - `go test ./...`
 - `GET http://127.0.0.1:8080/api/v1/health`
-- Browser QA script for `/system/status`
-  - desktop `1440x900`
-  - mobile `390x844`
-  - mock missing `nsi_*` tables
-  - mock missing SML tables
-  - horizontal overflow: false
-  - console errors: 0
+- Playwright + `@axe-core/playwright` smoke (`tests/e2e/a11y.spec.ts`) — 0 violations
+- Browser visual audit ผ่าน Cloudflare quick tunnel: คะแนน 9.1/10 (baseline 6.8)
 
-QA artifact:
+## Production Deploy Notes
 
-- `/private/tmp/next-salesinvoice-system-status-qa/report.json`
+- Deploy: `./deploy.sh` (rsync → 192.168.2.109 → docker compose up —build → cloudflared quick tunnel)
+- Backend auth cookie: `Secure: cfg.IsProduction()` — ใน production ต้องเข้าผ่าน HTTPS tunnel เท่านั้น; LAN HTTP `http://192.168.2.109:3040` จะ login ไม่สำเร็จ (401) เพราะ browser ไม่ส่ง Secure cookie ผ่าน HTTP
+- Cloudflare quick tunnel URL respawns ทุกรอบ deploy — ดู stdout ของ `./deploy.sh`
+- Dev login: `EMP001 / 1234`
 
 ## Important Safety Rules
 
