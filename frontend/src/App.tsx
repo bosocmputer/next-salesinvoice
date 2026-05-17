@@ -168,6 +168,7 @@ import { LazyDataGrid, thaiGridLocaleText } from "./components/data-grid";
 const SystemStatusPage = lazy(() => import("./pages/SystemStatusPage"));
 const NotFoundPage = lazy(() => import("./pages/NotFoundPage"));
 const AuditLogPage = lazy(() => import("./pages/AuditLogPage"));
+const BulkInvoiceEditPage = lazy(() => import("./pages/BulkInvoiceEditPage"));
 
 const initialFromDate = "2026-01-01";
 const initialToDate = "2026-12-31";
@@ -905,7 +906,7 @@ function DocumentLinesPanel({ compareLines, docNo, lines: providedLines }: { com
   );
 }
 
-function BulkInvoiceEditPage({ status, user }: { status: DatabaseStatus | null; user: UserClaims }) {
+function __removed_inline_BulkInvoiceEditPage({ status, user }: { status: DatabaseStatus | null; user: UserClaims }) {
   const isMobile = useMediaQuery(appTheme.breakpoints.down("sm"));
   const isAdmin = user.role === "Admin";
   const toast = useToast();
