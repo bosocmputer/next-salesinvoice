@@ -23,6 +23,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       >
         <Alert
           onClose={() => setToast((prev) => ({ ...prev, open: false }))}
+          role={toast.tone === "error" || toast.tone === "warning" ? "alert" : "status"}
           severity={toast.tone}
           sx={{ width: "100%" }}
           variant="filled"

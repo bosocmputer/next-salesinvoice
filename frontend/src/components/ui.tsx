@@ -7,6 +7,7 @@ import {
   Chip,
   LinearProgress,
   Paper,
+  Skeleton,
   Stack,
   Typography,
   type ButtonProps,
@@ -28,7 +29,34 @@ export function AppButton({
 }
 
 export function SkeletonLine({ width }: { width: string }) {
-  return <Box sx={{ bgcolor: "action.hover", borderRadius: 1, height: 16, width }} />;
+  return <Skeleton animation="wave" sx={{ borderRadius: 1, height: 16, width }} variant="rectangular" />;
+}
+
+/**
+ * Polite ARIA live region for inline status messages (loading, success, error).
+ * Screen readers announce content changes without stealing focus.
+ *
+ * Use sparingly — one per page is plenty.
+ */
+export function LiveRegion({ children, assertive = false }: { children: ReactNode; assertive?: boolean }) {
+  return (
+    <Box
+      aria-atomic="true"
+      aria-live={assertive ? "assertive" : "polite"}
+      role="status"
+      sx={{
+        clip: "rect(0 0 0 0)",
+        clipPath: "inset(50%)",
+        height: 1,
+        overflow: "hidden",
+        position: "absolute",
+        whiteSpace: "nowrap",
+        width: 1,
+      }}
+    >
+      {children}
+    </Box>
+  );
 }
 
 export function StatusBadge({ children, tone = "neutral" }: { children: ReactNode; tone?: "neutral" | "success" | "danger" }) {
@@ -60,21 +88,21 @@ export function PageHeader({ eyebrow, title, description, actions }: { eyebrow?:
 
 export function PageLoading({ title }: { title: string }) {
   return (
-    <Stack spacing={2}>
-      <Paper variant="outlined" sx={{ display: "grid", gap: 2, p: 2 }}>
+    <Stack aria-busy="true" aria-live="polite" spacing={2}>
+      <Paper variant="outlined" sx={{ display: "grid", gap: 1.5, p: 2 }}>
         <Typography component="h2" variant="h6">{title}</Typography>
         <SkeletonLine width="60%" />
-        <LinearProgress />
+        <LinearProgress aria-label={title} />
       </Paper>
       <Paper variant="outlined" sx={{ display: "grid", gap: 1.25, p: 2 }}>
         {Array.from({ length: 6 }).map((_, idx) => (
           <Stack direction="row" key={idx} spacing={1.5} sx={{ alignItems: "center" }}>
-            <Box sx={{ bgcolor: "action.hover", borderRadius: 1, height: 14, width: 28 }} />
-            <Box sx={{ bgcolor: "action.hover", borderRadius: 1, height: 14, width: "16%" }} />
-            <Box sx={{ bgcolor: "action.hover", borderRadius: 1, height: 14, width: "24%" }} />
-            <Box sx={{ bgcolor: "action.hover", borderRadius: 1, height: 14, width: "12%" }} />
-            <Box sx={{ bgcolor: "action.hover", borderRadius: 1, flex: 1, height: 14 }} />
-            <Box sx={{ bgcolor: "action.hover", borderRadius: 1, height: 14, width: "10%" }} />
+            <Skeleton animation="wave" sx={{ borderRadius: 1, height: 14, width: 28 }} variant="rectangular" />
+            <Skeleton animation="wave" sx={{ borderRadius: 1, height: 14, width: "16%" }} variant="rectangular" />
+            <Skeleton animation="wave" sx={{ borderRadius: 1, height: 14, width: "24%" }} variant="rectangular" />
+            <Skeleton animation="wave" sx={{ borderRadius: 1, height: 14, width: "12%" }} variant="rectangular" />
+            <Skeleton animation="wave" sx={{ borderRadius: 1, flex: 1, height: 14 }} variant="rectangular" />
+            <Skeleton animation="wave" sx={{ borderRadius: 1, height: 14, width: "10%" }} variant="rectangular" />
           </Stack>
         ))}
       </Paper>
