@@ -117,6 +117,17 @@ import {
   friendlyThaiError,
 } from "./lib/api";
 import {
+  AppButton,
+  EmptyState,
+  MetricCard,
+  MetricValue,
+  PageHeader,
+  PageLoading,
+  SkeletonLine,
+  StackRow,
+  StatusBadge,
+} from "./components/ui";
+import {
   appStatusLabel,
   appStatusTone,
   buildAuditInvoiceDialog,
@@ -154,6 +165,9 @@ const LazyDataGrid = lazy(async () => {
   const module = await import("@mui/x-data-grid");
   return { default: module.DataGrid as ComponentType<DataGridProps<any>> };
 });
+
+const SystemStatusPage = lazy(() => import("./pages/SystemStatusPage"));
+const NotFoundPage = lazy(() => import("./pages/NotFoundPage"));
 
 const initialFromDate = "2026-01-01";
 const initialToDate = "2026-12-31";
@@ -496,18 +510,20 @@ function AppRoutes() {
         element={
           user ? (
             <Shell activePage={activePage} activeTitle={titleFromPath(location.pathname)} databaseReady={ready} status={status} user={user} onLogout={logout} onNavigate={navigate}>
-              <Routes>
-                <Route index element={<Navigate to="/bulk-edit" replace />} />
-                <Route path="invoices" element={<Navigate to="/bulk-edit" replace />} />
-                <Route path="invoices/:docNo" element={<Navigate to="/bulk-edit" replace />} />
-                <Route path="invoices/:docNo/edit" element={<Navigate to="/bulk-edit" replace />} />
-                <Route path="bulk-edit" element={<BulkInvoiceEditPage status={status} user={user} />} />
-                <Route path="audit" element={user.role === "Admin" ? <AuditLogRoute user={user} /> : <Navigate to="/bulk-edit" replace />} />
-                <Route path="audit/:docNo" element={user.role === "Admin" ? <AuditLogRoute user={user} /> : <Navigate to="/bulk-edit" replace />} />
-                <Route path="system/status" element={user.role === "Admin" ? <SystemStatusPage status={status} onRefresh={refreshStatus} /> : <Navigate to="/bulk-edit" replace />} />
-                <Route path="system/database" element={<Navigate to="/system/status" replace />} />
-                <Route path="*" element={<NotFoundPage />} />
-              </Routes>
+              <Suspense fallback={<PageLoading title="กำลังโหลดหน้า" />}>
+                <Routes>
+                  <Route index element={<Navigate to="/bulk-edit" replace />} />
+                  <Route path="invoices" element={<Navigate to="/bulk-edit" replace />} />
+                  <Route path="invoices/:docNo" element={<Navigate to="/bulk-edit" replace />} />
+                  <Route path="invoices/:docNo/edit" element={<Navigate to="/bulk-edit" replace />} />
+                  <Route path="bulk-edit" element={<BulkInvoiceEditPage status={status} user={user} />} />
+                  <Route path="audit" element={user.role === "Admin" ? <AuditLogRoute user={user} /> : <Navigate to="/bulk-edit" replace />} />
+                  <Route path="audit/:docNo" element={user.role === "Admin" ? <AuditLogRoute user={user} /> : <Navigate to="/bulk-edit" replace />} />
+                  <Route path="system/status" element={user.role === "Admin" ? <SystemStatusPage status={status} onRefresh={refreshStatus} /> : <Navigate to="/bulk-edit" replace />} />
+                  <Route path="system/database" element={<Navigate to="/system/status" replace />} />
+                  <Route path="*" element={<NotFoundPage />} />
+                </Routes>
+              </Suspense>
             </Shell>
           ) : (
             <Navigate to="/login" replace />
@@ -552,10 +568,6 @@ function BrandLockup({ centered = false, subtitle, title }: { centered?: boolean
       </Box>
     </Stack>
   );
-}
-
-function SkeletonLine({ width }: { width: string }) {
-  return <Box sx={{ bgcolor: "action.hover", borderRadius: 1, height: 16, width }} />;
 }
 
 function BootScreen() {
@@ -3033,281 +3045,6 @@ function AuditEventDetails({ item }: { item: AuditLogItem }) {
   );
 }
 
-function SystemStatusPage({ status, onRefresh }: { status: DatabaseStatus | null; onRefresh: () => Promise<void> }) {
-  const navigate = useNavigate();
-  const [installing, setInstalling] = useState(false);
-  const [message, setMessage] = useState<{ severity: "success" | "error"; text: string } | null>(null);
-  const missingSmlTables = status?.missingSmlTables || [];
-  const missingAppTables = status?.missingAppTables || [];
-  const canInstallAppTables = Boolean(status?.connected && status.requiredSmlReady && !status.appSchemaReady && !installing);
-
-  async function installAppTables() {
-    if (!canInstallAppTables) return;
-    setInstalling(true);
-    setMessage(null);
-    try {
-      const response = await apiPost<DatabaseStatus>("/api/v1/system/database-migrate", {});
-      if (response.success) {
-        setMessage({ severity: "success", text: "ติดตั้งตารางระบบสำเร็จ ตรวจสอบสถานะล่าสุดแล้ว" });
-        await onRefresh();
-      } else {
-        setMessage({ severity: "error", text: response.error?.detail || response.message || "ติดตั้งตารางระบบไม่สำเร็จ" });
-      }
-    } finally {
-      setInstalling(false);
-    }
-  }
-
-  return (
-    <Stack spacing={2.5}>
-      <PageHeader
-        eyebrow="สำหรับผู้ดูแลระบบ"
-        title="ตั้งค่าและตรวจระบบ"
-        description="ตรวจฐาน SML และติดตั้งตารางของ next-salesinvoice เมื่อย้ายไปฐานใหม่"
-        actions={
-          <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
-            <AppButton onClick={() => navigate("/bulk-edit")} startIcon={<ChevronLeft size={16} />}>กลับไปแก้ไขบิล</AppButton>
-            <AppButton disabled={installing} onClick={() => void onRefresh()} startIcon={<RefreshCw size={16} />}>ตรวจสอบใหม่</AppButton>
-          </Stack>
-        }
-      />
-      <SystemSetupAlert
-        canInstall={canInstallAppTables}
-        installing={installing}
-        missingAppTables={missingAppTables}
-        missingSmlTables={missingSmlTables}
-        status={status}
-        onInstall={() => void installAppTables()}
-      />
-      {message ? <Alert severity={message.severity}>{message.text}</Alert> : null}
-      <Box sx={{ display: "grid", gap: 1.5, gridTemplateColumns: { xs: "1fr", md: "repeat(4, 1fr)" } }}>
-        <MetricCard icon={Database} label="ฐานข้อมูล" value={status?.database || "-"} />
-        <MetricCard icon={CheckCircle2} label="เชื่อมต่อ" value={status?.connected ? "พร้อม" : "ไม่พร้อม"} tone={status?.connected ? "neutral" : "danger"} />
-        <MetricCard icon={ShieldCheck} label="ตาราง SML" value={status?.requiredSmlReady ? "ครบ" : "ไม่ครบ"} tone={status?.requiredSmlReady ? "neutral" : "danger"} />
-        <MetricCard icon={ClipboardCheck} label="ตารางระบบ" value={status?.appSchemaReady ? "พร้อม" : "ไม่พร้อม"} tone={status?.appSchemaReady ? "neutral" : "danger"} />
-      </Box>
-      <StatusChecklist status={status} />
-      <MissingTablesPanel
-        description="ต้องมีตารางหลักของ SML ก่อน ระบบจึงจะติดตั้งตาราง next-salesinvoice ได้"
-        severity="error"
-        tables={missingSmlTables}
-        title="SML tables ที่ยังไม่ครบ"
-      />
-      <MissingTablesPanel
-        description="ตารางเหล่านี้เป็นของ next-salesinvoice และติดตั้งได้จากปุ่มด้านบนเมื่อ SML พร้อม"
-        severity="warning"
-        tables={missingAppTables}
-        title="ตารางระบบที่ยังไม่พบ"
-      />
-    </Stack>
-  );
-}
-
-function SystemSetupAlert({
-  canInstall,
-  installing,
-  missingAppTables,
-  missingSmlTables,
-  status,
-  onInstall,
-}: {
-  canInstall: boolean;
-  installing: boolean;
-  missingAppTables: string[];
-  missingSmlTables: string[];
-  status: DatabaseStatus | null;
-  onInstall: () => void;
-}) {
-  if (!status) return <Alert severity="info">กำลังตรวจสอบสถานะฐานข้อมูล</Alert>;
-
-  if (!status.connected) {
-    return <Alert severity="error">ยังเชื่อมต่อฐานข้อมูลไม่ได้ ตรวจสอบ host, port, user และ password ก่อนติดตั้งตารางระบบ</Alert>;
-  }
-
-  if (!status.requiredSmlReady) {
-    return (
-      <Alert
-        action={<AppButton disabled startIcon={<ShieldCheck size={16} />} tone="primary">ติดตั้งตารางระบบ</AppButton>}
-        severity="error"
-        sx={{
-          alignItems: { xs: "flex-start", sm: "center" },
-          "& .MuiAlert-action": { ml: { xs: 0, sm: "auto" }, pl: { xs: 0, sm: 2 }, pt: { xs: 1, sm: 0 } },
-        }}
-      >
-        SML tables หลักยังไม่ครบ ต้องแก้โครงสร้างฐาน SML ก่อนติดตั้งตารางของ next-salesinvoice
-        {missingSmlTables.length ? ` (${missingSmlTables.length} ตาราง)` : ""}
-      </Alert>
-    );
-  }
-
-  if (!status.appSchemaReady) {
-    return (
-      <Alert
-        action={
-          <AppButton disabled={!canInstall} onClick={onInstall} startIcon={installing ? <CircularProgress size={14} /> : <ShieldCheck size={16} />} tone="primary">
-            {installing ? "กำลังติดตั้ง" : "ติดตั้งตารางระบบ"}
-          </AppButton>
-        }
-        severity="warning"
-        sx={{
-          alignItems: { xs: "flex-start", sm: "center" },
-          "& .MuiAlert-action": { ml: { xs: 0, sm: "auto" }, pl: { xs: 0, sm: 2 }, pt: { xs: 1, sm: 0 } },
-        }}
-      >
-        ฐานนี้ยังไม่มีตารางของ next-salesinvoice
-        {missingAppTables.length ? ` (${missingAppTables.length} ตาราง)` : ""} กดติดตั้งเมื่อยืนยันว่าเป็นฐานที่ต้องใช้งานจริง
-      </Alert>
-    );
-  }
-
-  return <Alert severity="success">ตารางระบบพร้อมใช้งาน ฐานนี้สามารถใช้ flow แก้ไขบิลและ rollback ได้แล้ว</Alert>;
-}
-
-function NotFoundPage() {
-  const navigate = useNavigate();
-  return (
-    <Stack spacing={2.5}>
-      <PageHeader
-        eyebrow="ไม่พบหน้า"
-        title="ลิงก์นี้ไม่มีในระบบ"
-        description="ตรวจสอบ URL อีกครั้ง หรือกลับไปหน้าแก้ไขบิลเพื่อเริ่มงานใหม่"
-        actions={<AppButton onClick={() => navigate("/bulk-edit")} startIcon={<ChevronLeft size={16} />}>กลับไปแก้ไขบิล</AppButton>}
-      />
-      <Paper variant="outlined" sx={{ p: 2 }}>
-        <EmptyState title="ไม่พบหน้าที่ต้องการ" description="ระบบอาจย้ายเส้นทางหรือ URL ไม่ครบถ้วน" />
-      </Paper>
-    </Stack>
-  );
-}
-
-function StatusChecklist({ status }: { status: DatabaseStatus | null }) {
-  const rows = [
-    { label: "เชื่อมต่อฐานข้อมูล", ok: Boolean(status?.connected), detail: systemConnectionDetail(status) },
-    { label: "ข้อมูล SML ที่จำเป็น", ok: Boolean(status?.requiredSmlReady), detail: status?.requiredSmlReady ? "ตารางหลักของ SML ครบ" : missingTablesText(status?.missingSmlTables) },
-    { label: "ตารางของระบบแก้ไขบิล", ok: Boolean(status?.appSchemaReady), detail: status?.appSchemaReady ? "ตาราง next-salesinvoice พร้อมใช้งาน" : missingTablesText(status?.missingAppTables) },
-  ];
-
-  return (
-    <Paper variant="outlined" sx={{ p: 2 }}>
-      <Stack spacing={2}>
-      <Box>
-        <Typography color="text.secondary" variant="body2">ตรวจความพร้อม</Typography>
-        <Typography component="h2" sx={{ fontWeight: 700 }} variant="h6">รายการตรวจสอบ</Typography>
-      </Box>
-      <Stack spacing={1}>
-        {rows.map((row) => (
-          <Paper key={row.label} variant="outlined" sx={{ alignItems: "center", display: "flex", gap: 1.5, p: 1.5 }}>
-            <StatusBadge tone={row.ok ? "success" : "danger"}>{row.ok ? "ผ่าน" : "ต้องตรวจสอบ"}</StatusBadge>
-            <Box>
-              <Typography sx={{ fontWeight: 700 }} variant="body2">{row.label}</Typography>
-              <Typography color="text.secondary" variant="caption">{row.detail}</Typography>
-            </Box>
-          </Paper>
-        ))}
-      </Stack>
-      </Stack>
-    </Paper>
-  );
-}
-
-function MissingTablesPanel({ description, severity, tables, title }: { description: string; severity: "error" | "warning"; tables: string[]; title: string }) {
-  if (!tables.length) return null;
-  return (
-    <Paper
-      variant="outlined"
-      sx={{
-        borderColor: severity === "error" ? "error.light" : "warning.light",
-        p: 2,
-      }}
-    >
-      <Stack spacing={1}>
-        <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ alignItems: { sm: "center" }, justifyContent: "space-between" }}>
-          <Box>
-            <Typography component="h2" sx={{ fontWeight: 700 }} variant="subtitle1">{title}</Typography>
-            <Typography color="text.secondary" variant="caption">{description}</Typography>
-          </Box>
-          <StatusBadge tone={severity === "error" ? "danger" : "neutral"}>{tables.length} ตาราง</StatusBadge>
-        </Stack>
-        <Stack direction="row" sx={{ flexWrap: "wrap", gap: 0.75 }}>
-          {tables.map((table) => (
-            <Chip key={table} label={table} size="small" variant="outlined" />
-          ))}
-        </Stack>
-      </Stack>
-    </Paper>
-  );
-}
-
-function systemConnectionDetail(status: DatabaseStatus | null) {
-  if (!status?.database) return "-";
-  return status.schema ? `${status.database} · schema ${status.schema}` : status.database;
-}
-
-function missingTablesText(tables?: string[]) {
-  if (!tables?.length) return "ไม่พบรายการที่ขาดจาก API";
-  const preview = tables.slice(0, 4).join(", ");
-  return tables.length > 4 ? `ขาด ${tables.length} ตาราง: ${preview}...` : `ขาด ${tables.length} ตาราง: ${preview}`;
-}
-
-function PageHeader({ eyebrow, title, description, actions }: { eyebrow?: string; title: string; description?: string; actions?: React.ReactNode }) {
-  return (
-    <Stack direction={{ xs: "column", md: "row" }} spacing={1} sx={{ alignItems: { md: "center" }, justifyContent: "space-between" }}>
-      <Box>
-        {eyebrow ? <Typography color="text.secondary" variant="caption">{eyebrow}</Typography> : null}
-        <Typography component="h1" sx={{ fontWeight: 700 }} variant="h5">{title}</Typography>
-        {description ? <Typography color="text.secondary" variant="caption">{description}</Typography> : null}
-      </Box>
-      <Box>{actions}</Box>
-    </Stack>
-  );
-}
-
-function PageLoading({ title }: { title: string }) {
-  return (
-    <Stack spacing={2}>
-      <Paper variant="outlined" sx={{ display: "grid", gap: 2, p: 2 }}>
-        <Typography component="h2" variant="h6">{title}</Typography>
-        <SkeletonLine width="60%" />
-        <LinearProgress />
-      </Paper>
-      <Paper variant="outlined" sx={{ display: "grid", gap: 1.25, p: 2 }}>
-        {Array.from({ length: 6 }).map((_, idx) => (
-          <Stack direction="row" key={idx} spacing={1.5} sx={{ alignItems: "center" }}>
-            <Box sx={{ bgcolor: "action.hover", borderRadius: 1, height: 14, width: 28 }} />
-            <Box sx={{ bgcolor: "action.hover", borderRadius: 1, height: 14, width: "16%" }} />
-            <Box sx={{ bgcolor: "action.hover", borderRadius: 1, height: 14, width: "24%" }} />
-            <Box sx={{ bgcolor: "action.hover", borderRadius: 1, height: 14, width: "12%" }} />
-            <Box sx={{ bgcolor: "action.hover", borderRadius: 1, flex: 1, height: 14 }} />
-            <Box sx={{ bgcolor: "action.hover", borderRadius: 1, height: 14, width: "10%" }} />
-          </Stack>
-        ))}
-      </Paper>
-    </Stack>
-  );
-}
-
-function MetricCard({ icon: Icon, label, value, tone = "neutral" }: { icon: typeof FileText; label: string; value: string; tone?: "neutral" | "danger" }) {
-  return (
-    <Paper variant="outlined" sx={{ display: "grid", gap: 0.75, p: 2 }}>
-      <Icon size={18} />
-      <Typography color="text.secondary" variant="body2">{label}</Typography>
-      <Typography color={tone === "danger" ? "error.main" : "text.primary"} sx={{ fontWeight: 800 }} variant="h6">{value}</Typography>
-    </Paper>
-  );
-}
-
-function MetricValue({ compact = false, helper, label, value }: { compact?: boolean; helper: string; label: string; value: string }) {
-  return (
-    <Card variant="outlined">
-      <CardContent sx={{ p: compact ? 1 : 2, textAlign: compact ? "center" : "left", "&:last-child": { pb: compact ? 1 : 2 } }}>
-        <Typography color="text.secondary" noWrap variant={compact ? "caption" : "body2"}>{label}</Typography>
-        <Typography sx={{ fontWeight: 800, my: compact ? 0 : 0.5 }} variant={compact ? "h5" : "h4"}>{value}</Typography>
-        <Typography color="text.secondary" sx={{ display: compact ? "none" : "block" }} variant="caption">{helper}</Typography>
-      </CardContent>
-    </Card>
-  );
-}
-
 function RiskConfirmDialog({
   busy,
   children,
@@ -3363,28 +3100,6 @@ function RiskConfirmDialog({
           </AppButton>
       </DialogActions>
     </Dialog>
-  );
-}
-
-function EmptyState({ title, description, action }: { title: string; description: string; action?: React.ReactNode }) {
-  return (
-    <Paper
-      variant="outlined"
-      sx={{ alignItems: "center", display: "grid", gap: 1, justifyItems: "center", minHeight: 160, p: 3, textAlign: "center" }}
-    >
-      <AlertTriangle size={22} />
-      <Typography sx={{ fontWeight: 700 }}>{title}</Typography>
-      <Typography color="text.secondary" variant="body2">{description}</Typography>
-      {action}
-    </Paper>
-  );
-}
-
-function StackRow({ children }: { children: React.ReactNode }) {
-  return (
-    <Box sx={{ alignItems: "flex-start", display: "flex", gap: 2, justifyContent: "space-between" }}>
-      {children}
-    </Box>
   );
 }
 
@@ -3460,20 +3175,6 @@ function SelectionActionBar({
         </Stack>
       </Stack>
     </Paper>
-  );
-}
-
-function AppButton({
-  tone = "secondary",
-  children,
-  ...props
-}: ButtonProps & { tone?: "primary" | "secondary" | "danger" | "ghost" }) {
-  const color = tone === "danger" ? "error" : tone === "primary" ? "primary" : "inherit";
-  const variant = tone === "primary" || tone === "danger" ? "contained" : tone === "ghost" ? "text" : "outlined";
-  return (
-    <Button color={color} variant={variant} {...props}>
-      {children}
-    </Button>
   );
 }
 
@@ -3610,11 +3311,6 @@ function ChangedValue({
       {changed && previousValue ? <Typography color="text.secondary" sx={{ display: "block" }} variant="caption">เดิม: {previousValue}</Typography> : null}
     </Box>
   );
-}
-
-function StatusBadge({ children, tone = "neutral" }: { children: React.ReactNode; tone?: "neutral" | "success" | "danger" }) {
-  const color = tone === "success" ? "success" : tone === "danger" ? "error" : "default";
-  return <Chip color={color} label={children} size="small" variant={tone === "neutral" ? "outlined" : "filled"} />;
 }
 
 function documentsURL(fromDate: string, toDate: string, q = "") {
