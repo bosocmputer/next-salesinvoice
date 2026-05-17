@@ -424,7 +424,7 @@ function TechnicalJsonDialog({ item, onClose }: { item: DocumentHistoryItem; onC
             ))}
           </Tabs>
         </Box>
-        <Box sx={{ bgcolor: "#fbfcfd", maxHeight: { xs: "calc(100vh - 154px)", sm: "70vh" }, overflow: "auto", p: { xs: 1.25, sm: 2 } }}>
+        <Box sx={{ bgcolor: "background.default", maxHeight: { xs: "calc(100vh - 154px)", sm: "70vh" }, overflow: "auto", p: { xs: 1.25, sm: 2 } }}>
           <Stack direction="row" spacing={0.75} sx={{ flexWrap: "wrap", mb: 1 }}>
             {hasDiff ? (
               <>

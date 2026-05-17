@@ -1,4 +1,4 @@
-import { Component, FormEvent, ReactNode, Suspense, lazy, useEffect, useState } from "react";
+import { Component, FormEvent, ReactNode, Suspense, lazy, useEffect, useMemo, useState } from "react";
 import {
   Alert,
   AppBar,
@@ -14,11 +14,14 @@ import {
   ListItemButton,
   ListItemIcon,
   ListItemText,
+  Menu,
+  MenuItem,
   Paper,
   Stack,
   TextField,
   ThemeProvider,
   Toolbar,
+  Tooltip,
   Typography,
 } from "@mui/material";
 import {
@@ -38,6 +41,9 @@ import {
   ListChecks,
   LogOut,
   Menu as MenuIcon,
+  Monitor,
+  Moon,
+  Sun,
 } from "lucide-react";
 import type { DatabaseStatus, PageKey, UserClaims } from "./types";
 import { apiGet, apiPost, authExpiredEvent, authSessionKey } from "./lib/api";
@@ -45,7 +51,8 @@ import { AppButton, PageLoading, SkeletonLine, StatusBadge } from "./components/
 import { EmphasisText, SectionTitle } from "./components/ui/typography";
 import { legacyPathFromPage, pageFromPath, titleFromPath } from "./lib/format";
 
-import { appTheme } from "./theme";
+import { createAppTheme } from "./theme";
+import { ColorModeProvider, useColorMode, type ColorModePreference } from "./contexts/color-mode";
 import { ToastProvider } from "./contexts/toast";
 
 const SystemStatusPage = lazy(() => import("./pages/SystemStatusPage"));
@@ -65,16 +72,26 @@ const navItems: Array<{ key: PageKey; label: string; group: string; icon: typeof
 
 export default function App() {
   return (
-    <AppErrorBoundary>
-      <ThemeProvider theme={appTheme}>
-        <CssBaseline />
+    <ColorModeProvider>
+      <ThemedApp />
+    </ColorModeProvider>
+  );
+}
+
+function ThemedApp() {
+  const { mode } = useColorMode();
+  const theme = useMemo(() => createAppTheme(mode), [mode]);
+  return (
+    <ThemeProvider theme={theme}>
+      <CssBaseline />
+      <AppErrorBoundary>
         <ToastProvider>
           <BrowserRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
             <AppRoutes />
           </BrowserRouter>
         </ToastProvider>
-      </ThemeProvider>
-    </AppErrorBoundary>
+      </AppErrorBoundary>
+    </ThemeProvider>
   );
 }
 
@@ -516,6 +533,7 @@ function ShellHeader({
         </Stack>
         <Stack direction="row" spacing={{ xs: 0.5, sm: 0.75 }} sx={{ alignItems: "center", flexShrink: 0, minWidth: 0 }}>
           <DatabaseIndicator databaseReady={databaseReady} database={status?.database || "-"} />
+          <ColorModeToggle />
           <IconButton aria-label="ออกจากระบบ" onClick={onLogout} sx={{ display: { xs: "inline-flex", sm: "none" } }}>
             <LogOut size={18} />
           </IconButton>
@@ -538,6 +556,66 @@ function ShellHeader({
  * blocks with a single shared style fragment.
  */
 const DB_INDICATOR_LABEL_SX = { fontSize: 12, fontWeight: 800 } as const;
+
+/**
+ * Color-mode picker exposed in the app header. Cycles via a 3-option menu:
+ * Light / Dark / Auto (follow OS). The current effective icon is shown so
+ * users get instant feedback on which mode is active.
+ */
+function ColorModeToggle() {
+  const { preference, mode, setPreference } = useColorMode();
+  const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
+  const open = Boolean(anchorEl);
+  const ActiveIcon = preference === "auto" ? Monitor : mode === "dark" ? Moon : Sun;
+  const label = preference === "auto" ? "ธีมตามระบบ" : preference === "dark" ? "ธีมมืด" : "ธีมสว่าง";
+
+  const options: Array<{ value: ColorModePreference; label: string; Icon: typeof Sun }> = [
+    { value: "light", label: "สว่าง", Icon: Sun },
+    { value: "dark", label: "มืด", Icon: Moon },
+    { value: "auto", label: "ตามระบบ", Icon: Monitor },
+  ];
+
+  return (
+    <>
+      <Tooltip title={`เปลี่ยนธีม (${label})`}>
+        <IconButton
+          aria-label={`เปลี่ยนธีม ปัจจุบัน: ${label}`}
+          aria-haspopup="menu"
+          aria-expanded={open || undefined}
+          onClick={(event) => setAnchorEl(event.currentTarget)}
+        >
+          <ActiveIcon size={18} />
+        </IconButton>
+      </Tooltip>
+      <Menu
+        anchorEl={anchorEl}
+        open={open}
+        onClose={() => setAnchorEl(null)}
+        anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
+        transformOrigin={{ vertical: "top", horizontal: "right" }}
+      >
+        {options.map((option) => {
+          const Icon = option.Icon;
+          return (
+            <MenuItem
+              key={option.value}
+              selected={preference === option.value}
+              onClick={() => {
+                setPreference(option.value);
+                setAnchorEl(null);
+              }}
+            >
+              <ListItemIcon sx={{ minWidth: 32 }}>
+                <Icon size={16} />
+              </ListItemIcon>
+              <ListItemText primary={option.label} />
+            </MenuItem>
+          );
+        })}
+      </Menu>
+    </>
+  );
+}
 
 function DatabaseIndicator({ databaseReady, database }: { databaseReady: boolean; database: string }) {
   const label = databaseReady ? "พร้อมใช้งาน" : "ฐานข้อมูลมีปัญหา";
