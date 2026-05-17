@@ -6,7 +6,7 @@
 
 ## สถานะล่าสุด
 
-อัปเดตล่าสุด: 2026-05-18 Asia/Bangkok
+อัปเดตล่าสุด: 2026-05-17 Asia/Bangkok
 
 - Backend: Go + Gin + pgx/PostgreSQL
 - Frontend: React + Vite + Material UI v9 + `@uiw/react-json-view`
@@ -14,14 +14,18 @@
 - Typography primitives (`SectionTitle`, `DocCode`, `Money`, ...) รวมอยู่ที่ `frontend/src/components/ui/typography.tsx`
 - Mobile responsive: 44px tap target, dialogs fullScreen บน xs, DataGrid ถูกแทนด้วย card view บน xs
 - Accessibility: skip-link, focus ring, `prefers-reduced-motion`, axe-core smoke 0 violations
+- **Color mode**: รองรับ light / dark / auto (ตาม OS) — สลับได้จาก header และหน้า login, persist ใน localStorage, ฟัง `prefers-color-scheme` แบบ live
+- **Brand assets**: flat geometric "N" mark ใน `frontend/public/` (favicon SVG/PNG, apple-touch-icon, PWA 192/512, OG 1200×630)
 - `GET /api/v1/system/database-status` เป็น read-only verify
 - การสร้างตาราง `nsi_*` ต้องเป็น Admin action ผ่าน `POST /api/v1/system/database-migrate`
 - การตั้งค่า database connection บังคับผ่าน `.env` เท่านั้น ไม่มี UI สำหรับเปลี่ยน runtime
 - Production deploy ผ่าน HTTPS เท่านั้น (Secure cookie); LAN HTTP เข้าระบบไม่ได้
+- คู่มือติดตั้งฝั่งลูกค้า: [`docs/INSTALL_UBUNTU.md`](docs/INSTALL_UBUNTU.md)
 - Verification ล่าสุดใน session นี้:
   - `npm run build`: Pass
   - `go test ./...`: Pass
   - Playwright + axe-core (`frontend/tests/e2e/a11y.spec.ts`): 0 violations
+  - Browser visual: light + dark mode toggle verified ผ่าน cloudflare quick tunnel
 
 ## ใช้ทำอะไร
 
@@ -122,7 +126,12 @@ next-salesinvoice/
 │   ├── cmd/server/main.go
 │   └── internal/
 ├── frontend/               React + Vite + MUI app
+│   ├── public/             brand assets (logo, favicon, OG image)
 │   └── src/App.tsx
+├── docs/
+│   └── INSTALL_UBUNTU.md   คู่มือติดตั้งบน Ubuntu สำหรับ server ลูกค้า
+├── docker-compose.yml      backend + frontend (+ observability profile)
+├── deploy.sh               dev rsync + docker compose + cloudflared quick tunnel
 ├── README.md               canonical overview
 ├── SESSION_HANDOFF.md      latest checkpoint for another AI/session
 ├── backend/README.md       backend quickstart
@@ -232,4 +241,6 @@ GOCACHE="$PWD/.gocache" GOPATH="$PWD/.gopath" go test ./...
 - Multi-user conflict/stress test
 - Full E2E seed/apply/rollback test ที่ repeat ได้
 - Password-at-rest hardening สำหรับ saved DB config
-- Deploy/runbook และ monitoring/logging สำหรับ production
+- Monitoring/alerting on production (prometheus/grafana profile พร้อมใน `docker-compose.yml`)
+
+Deploy/runbook สำหรับฝั่งลูกค้า: ใช้ [`docs/INSTALL_UBUNTU.md`](docs/INSTALL_UBUNTU.md)

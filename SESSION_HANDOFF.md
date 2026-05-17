@@ -1,6 +1,6 @@
 # next-salesinvoice Session Handoff
 
-Last updated: 2026-05-18 Asia/Bangkok
+Last updated: 2026-05-17 Asia/Bangkok (color-mode + brand + install doc)
 
 ไฟล์นี้คือ checkpoint ล่าสุดสำหรับเปิด chat ใหม่หรือส่งต่อให้ AI ตัวอื่นทำงานต่อ อ่านคู่กับ `README.md` ก่อนแก้โค้ดเสมอ
 
@@ -65,7 +65,7 @@ App-owned tables:
 
 ## Frontend Module Layout (post-refactor, 2026-05-18)
 
-- `frontend/src/App.tsx` — root component, AppErrorBoundary, AppRoutes, AuthShell, BrandLockup, BootScreen, LoginScreen, Shell, ShellHeader, DatabaseIndicator
+- `frontend/src/App.tsx` — root component, ColorModeProvider → ThemedApp, AppErrorBoundary, AppRoutes, AuthShell, BrandLockup (uses `/logo-mark.svg`), BootScreen, LoginScreen (มีปุ่ม ColorModeToggle), Shell, ShellHeader (มี ColorModeToggle), DatabaseIndicator, ColorModeToggle
 - `frontend/src/pages/` — lazy-loaded ทุกหน้า
   - `SystemStatusPage.tsx`, `NotFoundPage.tsx`, `AuditLogPage.tsx`, `BulkInvoiceEditPage.tsx`
 - `frontend/src/components/`
@@ -75,8 +75,10 @@ App-owned tables:
   - `invoice-dialog.tsx` — InvoiceDetailDialog และชิ้นส่วนจอง dialog (shared chunk)
   - `data-grid.tsx` — LazyDataGrid + thaiGridLocaleText
 - `frontend/src/contexts/toast.tsx` — ToastProvider/useToast (Alert role)
-- `frontend/src/theme.ts` — appTheme + design tokens (`TOUCH_TARGET_MIN_PX=44`, `DESKTOP_CONTROL_HEIGHT_PX=36`)
+- `frontend/src/contexts/color-mode.tsx` — ColorModeProvider/useColorMode (light/dark/auto, localStorage persist, prefers-color-scheme live listener, cross-tab sync, sets `data-color-mode` + `color-scheme` on `<html>`)
+- `frontend/src/theme.ts` — `createAppTheme(mode)` factory + light/dark palettes + design tokens (`TOUCH_TARGET_MIN_PX=44`, `DESKTOP_CONTROL_HEIGHT_PX=36`). `appTheme` = light, kept สำหรับโมดูลที่ใช้แค่ breakpoints
 - `frontend/src/lib/` — `api.ts`, `format.ts` (singleton Intl formatters), `titleFromPath`
+- `frontend/public/` — brand assets: `favicon.svg`, `favicon-16/32.png`, `apple-touch-icon.png`, `icon-192/512.png`, `logo-mark.svg`, `logo-mark-light.svg`, `logo-horizontal.svg`, `og-image.svg`+`.png`
 - `frontend/tests/e2e/a11y.spec.ts` — Playwright + axe-core smoke (login + bulk-edit)
 
 Bundle (vite build):
@@ -86,7 +88,7 @@ Bundle (vite build):
 - `AuditLogPage`: ~18 kB
 - `SystemStatusPage`, `NotFoundPage`: < 5 kB each
 
-Commit หลักรอบ UX/A11y ล่าสุด: typography primitives → mobile responsive (44px tap target, fullScreen dialog, card view) → a11y (skip-link, focus ring, prefers-reduced-motion, LiveRegion, axe smoke) → 404 title fix + SystemStatus responsive grid → StatusBadge ไม่รัน icon บน neutral tone (ลบ empty Circle noise)
+Commit หลักรอบ UX/A11y ล่าสุด: typography primitives → mobile responsive (44px tap target, fullScreen dialog, card view) → a11y (skip-link, focus ring, prefers-reduced-motion, LiveRegion, axe smoke) → 404 title fix + SystemStatus responsive grid → StatusBadge ไม่รัน icon บน neutral tone → flat geometric "N" brand mark + favicon/OG icon set → light/dark/auto color-mode toggle (header + login) → คู่มือติดตั้ง Ubuntu (`docs/INSTALL_UBUNTU.md`)
 
 ## Latest UX/UI State
 
@@ -168,9 +170,10 @@ Passed in this session:
 
 ## Production Deploy Notes
 
-- Deploy: `./deploy.sh` (rsync → 192.168.2.109 → docker compose up —build → cloudflared quick tunnel)
-- Backend auth cookie: `Secure: cfg.IsProduction()` — ใน production ต้องเข้าผ่าน HTTPS tunnel เท่านั้น; LAN HTTP `http://192.168.2.109:3040` จะ login ไม่สำเร็จ (401) เพราะ browser ไม่ส่ง Secure cookie ผ่าน HTTP
-- Cloudflare quick tunnel URL respawns ทุกรอบ deploy — ดู stdout ของ `./deploy.sh`
+- Dev deploy: `./deploy.sh` (rsync → 192.168.2.109 → docker compose up —build → cloudflared quick tunnel) — สำหรับ dev/QA เท่านั้น
+- **Customer install (production)**: ทำตาม [`docs/INSTALL_UBUNTU.md`](docs/INSTALL_UBUNTU.md) — Docker engine + compose plugin → `/opt/next-salesinvoice` → `.env` (`SESSION_SECRET` ≥ 32 chars สุ่มใหม่ทุก deployment) → docker compose up → nginx reverse proxy + Let's Encrypt → ufw allow 22/80/443 เท่านั้น
+- Backend auth cookie: `Secure: cfg.IsProduction()` — production ต้องเข้าผ่าน HTTPS เท่านั้น; HTTP plain login ไม่ติด (cookie ไม่ส่งกลับ)
+- Cloudflare quick tunnel URL respawns ทุกรอบ `./deploy.sh` — ดู stdout
 - Dev login: `EMP001 / 1234`
 
 ## Important Safety Rules
