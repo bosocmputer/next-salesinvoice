@@ -266,7 +266,12 @@ function AuthShell({ children }: { children: React.ReactNode }) {
 function BrandLockup({ centered = false, subtitle, title }: { centered?: boolean; subtitle: string; title: string }) {
   return (
     <Stack direction={centered ? "column" : "row"} spacing={1.25} sx={{ alignItems: "center", textAlign: centered ? "center" : "left" }}>
-      <Avatar sx={{ bgcolor: "primary.main", fontWeight: 800 }}>NS</Avatar>
+      <Avatar
+        alt="next-salesinvoice"
+        src="/logo-mark.svg"
+        variant="rounded"
+        sx={{ bgcolor: "transparent", height: 40, width: 40, "& img": { objectFit: "contain" } }}
+      />
       <Box sx={{ minWidth: 0 }}>
         {centered ? (
           <Typography component="h1" sx={{ fontWeight: 800 }} variant="h5">{title}</Typography>

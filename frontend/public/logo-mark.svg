@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  next-salesinvoice — brand mark (flat, production-grade)
+  - Flat solid colors (no gradients, no opacity) → predictable on dark/light/print
+  - Stroke-based "N" with miter joins → renders sharp at 16 px through 512 px
+  - 8 px inner safe-area on a 64 px canvas
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="next-salesinvoice">
+  <title>next-salesinvoice</title>
+  <rect width="64" height="64" rx="12" fill="#245a6d"/>
+  <path d="M 18 48 V 16 L 46 48 V 16"
+        fill="none" stroke="#ffffff" stroke-width="9"
+        stroke-linecap="square" stroke-linejoin="miter" stroke-miterlimit="3"/>
+</svg>

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mark on light background (for use over teal/dark surfaces inverted, headers, etc.)
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="next-salesinvoice">
+  <title>next-salesinvoice</title>
+  <rect width="64" height="64" rx="12" fill="#ffffff"/>
+  <path d="M 18 48 V 16 L 46 48 V 16"
+        fill="none" stroke="#245a6d" stroke-width="9"
+        stroke-linecap="square" stroke-linejoin="miter" stroke-miterlimit="3"/>
+</svg>

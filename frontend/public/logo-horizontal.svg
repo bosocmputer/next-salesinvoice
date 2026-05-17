@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  next-salesinvoice — horizontal lockup
+  Mark (40×40) + wordmark in Helvetica/Arial (universal availability for SVG rendering)
+  Safe-area: half the mark's height on every side
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 64" role="img" aria-label="next-salesinvoice">
+  <title>next-salesinvoice</title>
+  <!-- Mark -->
+  <rect x="12" y="12" width="40" height="40" rx="8" fill="#245a6d"/>
+  <path d="M 21 44 V 20 L 43 44 V 20"
+        fill="none" stroke="#ffffff" stroke-width="6"
+        stroke-linecap="square" stroke-linejoin="miter" stroke-miterlimit="3"/>
+  <!-- Wordmark -->
+  <text x="64" y="40"
+        font-family="'Helvetica Neue', Helvetica, Arial, sans-serif"
+        font-size="22" font-weight="900" letter-spacing="-0.6"
+        fill="#1b4757">next-salesinvoice</text>
+</svg>
