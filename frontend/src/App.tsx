@@ -337,6 +337,9 @@ function LoginScreen({
   return (
     <AuthShell>
       <Paper component="form" elevation={3} onSubmit={submit} sx={{ display: "grid", gap: 2, p: 3, width: "min(420px, 100%)" }}>
+        <Stack direction="row" sx={{ justifyContent: "flex-end" }}>
+          <ColorModeToggle />
+        </Stack>
         <BrandLockup title="next-salesinvoice" subtitle="ระบบจัดการเอกสารขาย" centered />
         <Stack direction="row" spacing={1} sx={{ alignItems: "center", justifyContent: "space-between" }}>
           <StatusBadge tone={databaseReady ? "success" : "danger"}>
