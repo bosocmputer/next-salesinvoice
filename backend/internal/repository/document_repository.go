@@ -503,6 +503,7 @@ func (r *DocumentRepository) ApplyChange(ctx context.Context, docNo string, req 
 	if _, err := tx.Exec(queryCtx, `
 		update ic_trans
 		set doc_no = $3,
+			tax_doc_no = $3,
 			doc_format_code = $4,
 			cust_code = $5,
 			inquiry_type = $6,
@@ -896,6 +897,7 @@ func (r *DocumentRepository) RollbackDocument(ctx context.Context, req model.Rol
 		if _, err := tx.Exec(queryCtx, `
 			update ic_trans
 			set doc_no = $3,
+				tax_doc_no = $3,
 				doc_format_code = $4,
 				cust_code = $5,
 				inquiry_type = $6,
