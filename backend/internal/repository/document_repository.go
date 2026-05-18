@@ -504,7 +504,7 @@ func (r *DocumentRepository) ApplyChange(ctx context.Context, docNo string, req 
 		}
 	}
 
-	totals, err := r.calculateTotals(queryCtx, tx, docNo, nil)
+	totals, err := r.calculateTotals(queryCtx, tx, docNo, nil, req.VatType)
 	if err != nil {
 		return model.DocumentChangePreview{}, err
 	}
@@ -517,7 +517,19 @@ func (r *DocumentRepository) ApplyChange(ctx context.Context, docNo string, req 
 			cust_code = $4,
 			inquiry_type = $5,
 			vat_type = $6::integer,
-			tax_type = $6::smallint
+			tax_type = $6::smallint,
+			sum_amount_exclude_vat = case
+				when $6::integer = 0 then sum_amount
+				when $6::integer = 1 then round(sum_amount * 100.0 / (100.0 + coalesce(nullif(vat_rate, 0), 7)), 2)
+				when $6::integer = 2 then sum_amount
+				else sum_amount_exclude_vat
+			end,
+			total_vat_value = case
+				when $6::integer = 0 then 0::numeric
+				when $6::integer = 1 then sum_amount - round(sum_amount * 100.0 / (100.0 + coalesce(nullif(vat_rate, 0), 7)), 2)
+				when $6::integer = 2 then round(sum_amount * coalesce(nullif(vat_rate, 0), 7) / 100.0, 2)
+				else total_vat_value
+			end
 		where trans_flag = $1 and doc_no = $2
 	`, salesTransFlag, docNo, req.NewDocNo, req.CustomerCode, req.InquiryType, req.VatType); err != nil {
 		if normalized := normalizeDocumentWriteError(err, req.NewDocNo); normalized != nil {
@@ -686,7 +698,7 @@ func (r *DocumentRepository) BulkPreviewChange(ctx context.Context, req model.Bu
 	if err != nil {
 		return model.BulkDocumentChangeResult{}, err
 	}
-	totalsByDocNo, err := r.calculateTotalsByDocNo(queryCtx, r.pool, req.DocNos, req.RemoveItemCodes)
+	totalsByDocNo, err := r.calculateTotalsByDocNo(queryCtx, r.pool, req.DocNos, req.RemoveItemCodes, req.VatType)
 	if err != nil {
 		return model.BulkDocumentChangeResult{}, err
 	}
@@ -1655,7 +1667,7 @@ func (r *DocumentRepository) buildChangePreview(ctx context.Context, q documentQ
 	if err != nil {
 		return model.DocumentChangePreview{}, err
 	}
-	totals, err := r.calculateTotals(ctx, q, before.DocNo, req.RemoveItemCodes)
+	totals, err := r.calculateTotals(ctx, q, before.DocNo, req.RemoveItemCodes, req.VatType)
 	if err != nil {
 		return model.DocumentChangePreview{}, err
 	}
@@ -1793,21 +1805,46 @@ func (r *DocumentRepository) scanSummary(row interface{ Scan(...any) error }) (m
 	return item, nil
 }
 
-func (r *DocumentRepository) calculateTotals(ctx context.Context, q documentQuerier, docNo string, excludeItemCodes []string) (model.DocumentTotals, error) {
+// vatTotalsSelectSQL produces (total_value, total_before_vat, total_vat_value, total_discount, total_amount, line_count)
+// by recomputing each detail row's VAT split based on the supplied vat_type.
+// Conventions:
+//   - sum_amount is treated as the line subtotal (qty*price - discount) in whichever currency was stored.
+//   - vat_type 0 = no VAT, 1 = price INCLUDES VAT, 2 = price EXCLUDES VAT (VAT added on top).
+//   - vat_rate falls back to 7 when stored as 0/NULL.
+const vatTotalsSelectSQL = `
+	coalesce(sum(sum_amount), 0)::text,
+	coalesce(sum(case
+		when $4::integer = 0 then sum_amount
+		when $4::integer = 1 then round(sum_amount * 100.0 / (100.0 + coalesce(nullif(vat_rate, 0), 7)), 2)
+		when $4::integer = 2 then sum_amount
+		else sum_amount_exclude_vat
+	end), 0)::text,
+	coalesce(sum(case
+		when $4::integer = 0 then 0::numeric
+		when $4::integer = 1 then sum_amount - round(sum_amount * 100.0 / (100.0 + coalesce(nullif(vat_rate, 0), 7)), 2)
+		when $4::integer = 2 then round(sum_amount * coalesce(nullif(vat_rate, 0), 7) / 100.0, 2)
+		else total_vat_value
+	end), 0)::text,
+	0::numeric::text,
+	coalesce(sum(case
+		when $4::integer = 0 then sum_amount
+		when $4::integer = 1 then sum_amount
+		when $4::integer = 2 then sum_amount + round(sum_amount * coalesce(nullif(vat_rate, 0), 7) / 100.0, 2)
+		else sum_amount + total_vat_value
+	end), 0)::text,
+	count(*)::bigint
+`
+
+func (r *DocumentRepository) calculateTotals(ctx context.Context, q documentQuerier, docNo string, excludeItemCodes []string, vatType int16) (model.DocumentTotals, error) {
 	var totals model.DocumentTotals
 	if err := q.QueryRow(ctx, `
 		select
-			coalesce(sum(sum_amount), 0)::text,
-			coalesce(sum(sum_amount_exclude_vat), 0)::text,
-			coalesce(sum(total_vat_value), 0)::text,
-			0::numeric::text,
-			(coalesce(sum(sum_amount), 0) + coalesce(sum(total_vat_value), 0))::text,
-			count(*)::bigint
+		`+vatTotalsSelectSQL+`
 		from ic_trans_detail
 		where trans_flag = $1
 			and doc_no = $2
 			and (coalesce(cardinality($3::text[]), 0) = 0 or item_code <> all($3::text[]))
-	`, salesTransFlag, docNo, excludeItemCodes).Scan(
+	`, salesTransFlag, docNo, excludeItemCodes, int32(vatType)).Scan(
 		&totals.TotalValue,
 		&totals.TotalBeforeVat,
 		&totals.TotalVatValue,
@@ -1820,7 +1857,7 @@ func (r *DocumentRepository) calculateTotals(ctx context.Context, q documentQuer
 	return totals, nil
 }
 
-func (r *DocumentRepository) calculateTotalsByDocNo(ctx context.Context, q documentQuerier, docNos []string, excludeItemCodes []string) (map[string]model.DocumentTotals, error) {
+func (r *DocumentRepository) calculateTotalsByDocNo(ctx context.Context, q documentQuerier, docNos []string, excludeItemCodes []string, vatType int16) (map[string]model.DocumentTotals, error) {
 	items := make(map[string]model.DocumentTotals, len(docNos))
 	if len(docNos) == 0 {
 		return items, nil
@@ -1828,18 +1865,13 @@ func (r *DocumentRepository) calculateTotalsByDocNo(ctx context.Context, q docum
 	rows, err := q.Query(ctx, `
 		select
 			doc_no,
-			coalesce(sum(sum_amount), 0)::text,
-			coalesce(sum(sum_amount_exclude_vat), 0)::text,
-			coalesce(sum(total_vat_value), 0)::text,
-			0::numeric::text,
-			(coalesce(sum(sum_amount), 0) + coalesce(sum(total_vat_value), 0))::text,
-			count(*)::bigint
+		`+vatTotalsSelectSQL+`
 		from ic_trans_detail
 		where trans_flag = $1
 			and doc_no = any($2)
 			and (coalesce(cardinality($3::text[]), 0) = 0 or item_code <> all($3::text[]))
 		group by doc_no
-	`, salesTransFlag, docNos, excludeItemCodes)
+	`, salesTransFlag, docNos, excludeItemCodes, int32(vatType))
 	if err != nil {
 		return nil, fmt.Errorf("calculate bulk document totals: %w", err)
 	}
