@@ -18,6 +18,7 @@ import {
   LinearProgress,
   MenuItem,
   Paper,
+  Slide,
   Stack,
   Tab,
   Table,
@@ -475,7 +476,7 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
   if (loading && !documents) return <PageLoading title="กำลังโหลดรายการบิลสำหรับแก้ไขบิล" />;
 
   return (
-    <Stack spacing={1.5}>
+    <Stack spacing={1.5} sx={{ pb: selectedDocNos.length ? { xs: 12, sm: 9 } : 0 }}>
       {message ? <Alert severity={message.includes("สำเร็จ") || message.includes("เลือก") ? "success" : "warning"}>{message}</Alert> : null}
 
       <Paper variant="outlined" sx={{ minWidth: 0, overflow: "hidden" }}>
@@ -543,6 +544,7 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
               onClear={clearSelection}
               onOpenSettings={() => setSettingsOpen(true)}
               onPreview={() => void previewBulk()}
+              sticky
             />
           ) : null}
         </Stack>
@@ -639,10 +641,11 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
                   bgcolor: "action.hover",
                 },
                 "& .MuiDataGrid-row.Mui-selected": {
-                  bgcolor: "rgba(36, 90, 109, 0.09)",
+                  bgcolor: "rgba(36, 90, 109, 0.18)",
+                  boxShadow: "inset 3px 0 0 var(--mui-palette-primary-main)",
                 },
                 "& .MuiDataGrid-row.Mui-selected:hover": {
-                  bgcolor: "rgba(36, 90, 109, 0.12)",
+                  bgcolor: "rgba(36, 90, 109, 0.24)",
                 },
                 "& .MuiDataGrid-cell:focus, & .MuiDataGrid-columnHeader:focus": {
                   outline: "none",
@@ -1306,6 +1309,7 @@ function SelectionActionBar({
   onClear,
   onOpenSettings,
   onPreview,
+  sticky = false,
 }: {
   busy: boolean;
   canPreview: boolean;
@@ -1316,6 +1320,7 @@ function SelectionActionBar({
   onClear: () => void;
   onOpenSettings: () => void;
   onPreview: () => void;
+  sticky?: boolean;
 }) {
   const isMobile = useMediaQuery(appTheme.breakpoints.down("sm"));
   const chips = canPreview ? [
@@ -1324,28 +1329,38 @@ function SelectionActionBar({
     removeCount ? `ลบสินค้า ${removeCount} รายการ` : "",
   ].filter(Boolean) : [];
 
-  return (
+  const inner = (
     <Paper
       aria-label="ชุดคำสั่งบิลที่เลือก"
-      variant="outlined"
+      elevation={sticky ? 8 : 0}
+      variant={sticky ? "elevation" : "outlined"}
       sx={{
-        bgcolor: "action.hover",
-        p: 1,
+        bgcolor: sticky ? "background.paper" : "action.hover",
+        p: sticky ? { xs: 1.25, md: 1.5 } : 1,
+        borderRadius: sticky ? 0 : undefined,
+        borderTop: sticky ? "2px solid" : undefined,
+        borderTopColor: sticky ? (canPreview ? "success.main" : "primary.main") : undefined,
       }}
     >
-      <Stack direction={{ xs: "column", md: "row" }} spacing={1} sx={{ alignItems: { md: "center" }, justifyContent: "space-between", minWidth: 0 }}>
-        <Stack spacing={0.75} sx={{ minWidth: 0 }}>
-          <Stack direction="row" spacing={1} sx={{ alignItems: "center", flexWrap: "wrap" }}>
-            <EmphasisText>เลือก {selectedCount} บิลแล้ว</EmphasisText>
-            {canPreview ? <StatusBadge tone="success">พร้อมพรีวิว</StatusBadge> : <StatusBadge>ยังไม่ได้ตั้งค่า</StatusBadge>}
-          </Stack>
+      <Stack
+        direction={{ xs: "column", md: "row" }}
+        spacing={1.25}
+        sx={{
+          alignItems: { md: "center" },
+          justifyContent: "space-between",
+          minWidth: 0,
+          mx: "auto",
+          maxWidth: sticky ? 1400 : undefined,
+        }}
+      >
+        <Stack direction="row" spacing={1.25} sx={{ alignItems: "center", flexWrap: "wrap", minWidth: 0 }}>
+          <EmphasisText>เลือก {selectedCount} บิล</EmphasisText>
+          {canPreview ? <StatusBadge tone="success">พร้อมพรีวิว</StatusBadge> : <StatusBadge>ยังไม่ได้ตั้งค่า</StatusBadge>}
           {chips.length ? (
             <Stack direction="row" spacing={0.75} sx={{ flexWrap: "wrap" }}>
               {chips.map((label) => <Chip key={label} label={label} size="small" variant="outlined" />)}
             </Stack>
-          ) : (
-            <Typography color="text.secondary" variant="caption">กดตั้งค่าเพื่อเลือกลูกหนี้ใหม่ ชุดเอกสาร และเงื่อนไขก่อนพรีวิว</Typography>
-          )}
+          ) : null}
         </Stack>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ alignItems: "stretch", flexShrink: 0 }}>
           {canPreview ? (
@@ -1368,6 +1383,25 @@ function SelectionActionBar({
         </Stack>
       </Stack>
     </Paper>
+  );
+
+  if (!sticky) return inner;
+
+  return (
+    <Slide direction="up" in mountOnEnter unmountOnExit>
+      <Box
+        sx={{
+          position: "fixed",
+          left: 0,
+          right: 0,
+          bottom: 0,
+          zIndex: (theme) => theme.zIndex.appBar,
+          pointerEvents: "auto",
+        }}
+      >
+        {inner}
+      </Box>
+    </Slide>
   );
 }
 
