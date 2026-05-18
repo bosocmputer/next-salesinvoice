@@ -475,7 +475,7 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
         <Stack spacing={{ xs: 1.25, sm: 1.5 }} sx={{ p: { xs: 1.25, sm: 1.5 } }}>
           <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ alignItems: { xs: "flex-start", sm: "center" }, justifyContent: "space-between" }}>
 	            <SectionTitle level="h2">รายการบิล</SectionTitle>
-            <StatusBadge>{loading ? "กำลังโหลด" : `${items.length}${documents?.hasMore ? "+" : ""} บิลที่แสดง`}</StatusBadge>
+            <StatusBadge>{loading ? "กำลังโหลด" : `แสดง ${items.length.toLocaleString("th-TH")} / ${(documents?.total ?? items.length).toLocaleString("th-TH")} บิล`}</StatusBadge>
           </Stack>
           <Box sx={{ alignItems: "flex-start", display: "grid", gap: 1, gridTemplateColumns: { xs: "1fr 1fr", lg: "150px 150px minmax(220px, 1fr) auto" }, minWidth: 0 }}>
             <TextField

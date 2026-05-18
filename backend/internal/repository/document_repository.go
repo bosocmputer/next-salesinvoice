@@ -154,7 +154,7 @@ func (filter documentSearchFilter) rangeBounds() ([]string, []string) {
 	return starts, ends
 }
 
-func (r *DocumentRepository) List(ctx context.Context, from, to time.Time, page, pageSize int, search string) ([]model.DocumentSummary, bool, error) {
+func (r *DocumentRepository) List(ctx context.Context, from, to time.Time, page, pageSize int, search string) ([]model.DocumentSummary, bool, int, error) {
 	queryCtx, cancel := context.WithTimeout(ctx, r.cfg.DBQueryTimeout)
 	defer cancel()
 
@@ -162,6 +162,31 @@ func (r *DocumentRepository) List(ctx context.Context, from, to time.Time, page,
 	searchPattern := searchFilter.search + "%"
 	rangeStarts, rangeEnds := searchFilter.rangeBounds()
 	offset := (page - 1) * pageSize
+	var total int
+	countCtx, cancelCount := context.WithTimeout(ctx, r.cfg.DBQueryTimeout)
+	defer cancelCount()
+	if err := r.pool.QueryRow(countCtx, `
+		select count(*)
+		from ic_trans
+		where trans_flag = $1
+			and doc_date >= $2
+			and doc_date <= $3
+			and (
+				(not $4::boolean and ($5 = '' or ic_trans.doc_no ilike $6 or cust_code ilike $6 or remark ilike $6))
+				or
+				($4::boolean and (
+					upper(ic_trans.doc_no) = any($7::text[])
+					or exists (
+						select 1
+						from unnest($8::text[], $9::text[]) as doc_range(start_doc_no, end_doc_no)
+						where upper(ic_trans.doc_no) >= doc_range.start_doc_no
+							and upper(ic_trans.doc_no) <= doc_range.end_doc_no
+					)
+				))
+			)
+	`, salesTransFlag, from, to, searchFilter.advanced, searchFilter.search, searchPattern, searchFilter.exactDocNos, rangeStarts, rangeEnds).Scan(&total); err != nil {
+		return nil, false, 0, fmt.Errorf("count documents: %w", err)
+	}
 	rows, err := r.pool.Query(queryCtx, `
 		select
 			ic_trans.doc_no,
@@ -244,7 +269,7 @@ func (r *DocumentRepository) List(ctx context.Context, from, to time.Time, page,
 		limit $4 offset $5
 	`, salesTransFlag, from, to, pageSize+1, offset, searchFilter.advanced, searchFilter.search, searchPattern, searchFilter.exactDocNos, rangeStarts, rangeEnds)
 	if err != nil {
-		return nil, false, fmt.Errorf("query documents: %w", err)
+		return nil, false, 0, fmt.Errorf("query documents: %w", err)
 	}
 	defer rows.Close()
 
@@ -283,19 +308,19 @@ func (r *DocumentRepository) List(ctx context.Context, from, to time.Time, page,
 			&item.DocFormatCode,
 			&item.AppStatus,
 		); err != nil {
-			return nil, false, fmt.Errorf("scan document: %w", err)
+			return nil, false, 0, fmt.Errorf("scan document: %w", err)
 		}
 		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, false, fmt.Errorf("iterate documents: %w", err)
+		return nil, false, 0, fmt.Errorf("iterate documents: %w", err)
 	}
 
 	hasMore := len(items) > pageSize
 	if hasMore {
 		items = items[:pageSize]
 	}
-	return items, hasMore, nil
+	return items, hasMore, total, nil
 }
 
 func (r *DocumentRepository) ListDocNos(ctx context.Context, from, to time.Time, search string, limit int) ([]string, bool, error) {

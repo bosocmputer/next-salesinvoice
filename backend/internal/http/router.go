@@ -84,7 +84,7 @@ func (d RouterDeps) documentsList(c *gin.Context) {
 	}
 	page := parseBoundedInt(c.Query("page"), 1, 1, 100000)
 	pageSize := parseBoundedInt(c.Query("pageSize"), 50, 1, 100)
-	items, hasMore, err := d.state.Current().Documents.List(c.Request.Context(), from, to, page, pageSize, c.Query("q"))
+	items, hasMore, total, err := d.state.Current().Documents.List(c.Request.Context(), from, to, page, pageSize, c.Query("q"))
 	if err != nil {
 		response.Error(c, nethttp.StatusInternalServerError, errorcode.DBConnection, "load documents failed", err.Error())
 		return
@@ -93,7 +93,7 @@ func (d RouterDeps) documentsList(c *gin.Context) {
 		"items":    items,
 		"page":     page,
 		"pageSize": pageSize,
-		"total":    len(items),
+		"total":    total,
 		"hasMore":  hasMore,
 	})
 }
