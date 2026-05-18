@@ -80,8 +80,15 @@ import { appTheme } from "../theme";
 import { useToast } from "../contexts/toast";
 import { LazyDataGrid, thaiGridLocaleText } from "../components/data-grid";
 
-const initialFromDate = "2026-01-01";
-const initialToDate = "2026-12-31";
+const isoDate = (d: Date) => {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+};
+const today = new Date();
+const initialFromDate = isoDate(new Date(today.getFullYear(), today.getMonth(), 1));
+const initialToDate = isoDate(today);
 
 // Silence unused import warnings for helpers re-exported for parity with previous inline implementation.
 void numericValue;
