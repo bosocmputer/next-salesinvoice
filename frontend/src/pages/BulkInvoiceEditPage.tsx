@@ -23,6 +23,7 @@ import {
   Tab,
   Table,
   TableBody,
+  Tooltip,
   TableCell,
   TableContainer,
   TableHead,
@@ -34,7 +35,7 @@ import {
 } from "@mui/material";
 import type { GridColDef, GridRowSelectionModel } from "@mui/x-data-grid";
 import { useSearchParams } from "react-router-dom";
-import { AlertTriangle, ChevronLeft, ChevronRight, RefreshCw, Search, X } from "lucide-react";
+import { AlertTriangle, ChevronLeft, ChevronRight, HelpCircle, RefreshCw, Search, X } from "lucide-react";
 import type {
   BulkDocumentChangeItem,
   BulkDocumentChangeRequest,
@@ -476,14 +477,13 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
   if (loading && !documents) return <PageLoading title="กำลังโหลดรายการบิลสำหรับแก้ไขบิล" />;
 
   return (
-    <Stack spacing={1.5} sx={{ pb: selectedDocNos.length ? { xs: 12, sm: 9 } : 0 }}>
+    <Stack spacing={1.5} sx={{ pb: selectedDocNos.length ? { xs: 11, sm: 8 } : 0 }}>
       {message ? <Alert severity={message.includes("สำเร็จ") || message.includes("เลือก") ? "success" : "warning"}>{message}</Alert> : null}
 
       <Paper variant="outlined" sx={{ minWidth: 0, overflow: "hidden" }}>
         <Stack spacing={{ xs: 1.25, sm: 1.5 }} sx={{ p: { xs: 1.25, sm: 1.5 } }}>
-          <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ alignItems: { xs: "flex-start", sm: "center" }, justifyContent: "space-between" }}>
-	            <SectionTitle level="h2">รายการบิล</SectionTitle>
-            <StatusBadge>{loading ? "กำลังโหลด" : `แสดง ${items.length.toLocaleString("th-TH")} / ${(documents?.total ?? items.length).toLocaleString("th-TH")} บิล`}</StatusBadge>
+          <Stack direction="row" spacing={1} sx={{ alignItems: "center", justifyContent: "flex-end" }}>
+            <StatusBadge>{loading ? "กำลังโหลด" : `${items.length.toLocaleString("th-TH")} / ${(documents?.total ?? items.length).toLocaleString("th-TH")} บิล`}</StatusBadge>
           </Stack>
           <Box sx={{ alignItems: "flex-start", display: "grid", gap: 1, gridTemplateColumns: { xs: "1fr 1fr", lg: "150px 150px minmax(220px, 1fr) auto" }, minWidth: 0 }}>
             <TextField
@@ -501,7 +501,6 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
               value={toDate}
             />
             <TextField
-              helperText="ค้นหาเลขบิลหลายใบหรือช่วงได้ เช่น เลขเริ่ม:เลขจบ,เลขเดี่ยว"
               inputRef={searchInputRef}
               label="ค้นหา"
               onChange={(event) => setSearch(event.target.value)}
@@ -525,6 +524,26 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
                     </InputAdornment>
                   ) : null,
                   startAdornment: <InputAdornment position="start"><Search size={16} /></InputAdornment>,
+                  endAdornment: (
+                    <InputAdornment position="end">
+                      {search ? (
+                        <IconButton
+                          aria-label="ล้างคำค้นหา"
+                          disabled={loading}
+                          edge="end"
+                          onClick={() => void clearSearchText()}
+                          size="small"
+                        >
+                          <X size={16} />
+                        </IconButton>
+                      ) : null}
+                      <Tooltip arrow placement="top" title="ค้นหาเลขบิลหลายใบหรือช่วงได้ เช่น เลขเริ่ม:เลขจบ,เลขเดี่ยว">
+                        <IconButton aria-label="คำแนะนำการค้นหา" edge="end" size="small" sx={{ ml: 0.25 }}>
+                          <HelpCircle size={16} />
+                        </IconButton>
+                      </Tooltip>
+                    </InputAdornment>
+                  ),
                 },
               }}
             />
@@ -604,6 +623,7 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
               columns={documentGridColumns}
               columnHeaderHeight={44}
               density="standard"
+              hideFooterSelectedRowCount
               disableRowSelectionExcludeModel
               disableRowSelectionOnClick
               getRowId={(row) => row.docNo}
