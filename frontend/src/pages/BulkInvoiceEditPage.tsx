@@ -510,19 +510,6 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
               value={search}
               slotProps={{
                 input: {
-                  endAdornment: search ? (
-                    <InputAdornment position="end">
-                      <IconButton
-                        aria-label="ล้างคำค้นหา"
-                        disabled={loading}
-                        edge="end"
-                        onClick={() => void clearSearchText()}
-                        size="small"
-                      >
-                        <X size={16} />
-                      </IconButton>
-                    </InputAdornment>
-                  ) : null,
                   startAdornment: <InputAdornment position="start"><Search size={16} /></InputAdornment>,
                   endAdornment: (
                     <InputAdornment position="end">
