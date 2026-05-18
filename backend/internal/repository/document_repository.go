@@ -520,14 +520,14 @@ func (r *DocumentRepository) ApplyChange(ctx context.Context, docNo string, req 
 			tax_type = $6::smallint,
 			sum_amount_exclude_vat = case
 				when $6::integer = 0 then sum_amount
-				when $6::integer = 1 then round(sum_amount * 100.0 / (100.0 + coalesce(nullif(vat_rate, 0), 7)), 2)
+				when $6::integer = 1 then round(sum_amount * 100.0 / (100.0 + 7), 2)
 				when $6::integer = 2 then sum_amount
 				else sum_amount_exclude_vat
 			end,
 			total_vat_value = case
 				when $6::integer = 0 then 0::numeric
-				when $6::integer = 1 then sum_amount - round(sum_amount * 100.0 / (100.0 + coalesce(nullif(vat_rate, 0), 7)), 2)
-				when $6::integer = 2 then round(sum_amount * coalesce(nullif(vat_rate, 0), 7) / 100.0, 2)
+				when $6::integer = 1 then sum_amount - round(sum_amount * 100.0 / (100.0 + 7), 2)
+				when $6::integer = 2 then round(sum_amount * 7 / 100.0, 2)
 				else total_vat_value
 			end
 		where trans_flag = $1 and doc_no = $2
@@ -1815,21 +1815,21 @@ const vatTotalsSelectSQL = `
 	coalesce(sum(sum_amount), 0)::text,
 	coalesce(sum(case
 		when $4::integer = 0 then sum_amount
-		when $4::integer = 1 then round(sum_amount * 100.0 / (100.0 + coalesce(nullif(vat_rate, 0), 7)), 2)
+		when $4::integer = 1 then round(sum_amount * 100.0 / (100.0 + 7), 2)
 		when $4::integer = 2 then sum_amount
 		else sum_amount_exclude_vat
 	end), 0)::text,
 	coalesce(sum(case
 		when $4::integer = 0 then 0::numeric
-		when $4::integer = 1 then sum_amount - round(sum_amount * 100.0 / (100.0 + coalesce(nullif(vat_rate, 0), 7)), 2)
-		when $4::integer = 2 then round(sum_amount * coalesce(nullif(vat_rate, 0), 7) / 100.0, 2)
+		when $4::integer = 1 then sum_amount - round(sum_amount * 100.0 / (100.0 + 7), 2)
+		when $4::integer = 2 then round(sum_amount * 7 / 100.0, 2)
 		else total_vat_value
 	end), 0)::text,
 	0::numeric::text,
 	coalesce(sum(case
 		when $4::integer = 0 then sum_amount
 		when $4::integer = 1 then sum_amount
-		when $4::integer = 2 then sum_amount + round(sum_amount * coalesce(nullif(vat_rate, 0), 7) / 100.0, 2)
+		when $4::integer = 2 then sum_amount + round(sum_amount * 7 / 100.0, 2)
 		else sum_amount + total_vat_value
 	end), 0)::text,
 	count(*)::bigint
