@@ -217,6 +217,12 @@ func TestPreviewNextDocNo(t *testing.T) {
 	if got := previewNextDocNo("INV2", "INV2-@YYMM###", "INV2-2605007", now); got != "INV2-2605008" {
 		t.Fatalf("expected format prefix to be preserved, got %s", got)
 	}
+	if got := previewNextDocNo("INV", "@-YYMM####", "INV-26059581", now); got != "INV-26059582" {
+		t.Fatalf("expected SML @-YYMM substitution, got %s", got)
+	}
+	if got := previewNextDocNo("INV", "@-YYMM####", "", now); got != "INV-26050001" {
+		t.Fatalf("expected SML @-YYMM first number, got %s", got)
+	}
 }
 
 type fakeDocumentQuerier struct {

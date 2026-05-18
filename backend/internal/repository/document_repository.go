@@ -2010,12 +2010,24 @@ func previewNextDocNo(formatCode, format, latest string, now time.Time) string {
 		return ""
 	}
 	formatCode = strings.TrimSpace(formatCode)
+	// Substitute date tokens first. SML uses both forms:
+	//   - `@YYMM####`  (combined token)
+	//   - `@-YYMM####` (where `@` = doc format code prefix, and `YY`/`MM` are bare placeholders)
+	// Replace longest first to avoid `YYYY` being consumed by `YY`.
 	prefix := strings.ReplaceAll(format, "@YYYYMM", now.Format("200601"))
 	prefix = strings.ReplaceAll(prefix, "@YYMM", now.Format("0601"))
 	prefix = strings.ReplaceAll(prefix, "@YYYY", now.Format("2006"))
 	prefix = strings.ReplaceAll(prefix, "@YY", now.Format("06"))
 	prefix = strings.ReplaceAll(prefix, "@MM", now.Format("01"))
-	prefix = strings.ReplaceAll(prefix, "@MM", now.Format("01"))
+	prefix = strings.ReplaceAll(prefix, "YYYYMM", now.Format("200601"))
+	prefix = strings.ReplaceAll(prefix, "YYMM", now.Format("0601"))
+	prefix = strings.ReplaceAll(prefix, "YYYY", now.Format("2006"))
+	prefix = strings.ReplaceAll(prefix, "YY", now.Format("06"))
+	prefix = strings.ReplaceAll(prefix, "MM", now.Format("01"))
+	// `@` (after date tokens consumed) represents the doc format code.
+	if formatCode != "" {
+		prefix = strings.ReplaceAll(prefix, "@", formatCode)
+	}
 	hashCount := strings.Count(prefix, "#")
 	if hashCount == 0 {
 		return ensureDocFormatPrefix(formatCode, prefix)
