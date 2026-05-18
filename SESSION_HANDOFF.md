@@ -1,6 +1,6 @@
 # next-salesinvoice Session Handoff
 
-Last updated: 2026-05-17 Asia/Bangkok (color-mode + brand + install doc)
+Last updated: 2026-05-18 Asia/Bangkok (external SML DB + doc-number `@` format + tax_doc_no sync + real total count + VAT recompute on vat_type/delete)
 
 ไฟล์นี้คือ checkpoint ล่าสุดสำหรับเปิด chat ใหม่หรือส่งต่อให้ AI ตัวอื่นทำงานต่อ อ่านคู่กับ `README.md` ก่อนแก้โค้ดเสมอ
 
@@ -16,11 +16,12 @@ Last updated: 2026-05-17 Asia/Bangkok (color-mode + brand + install doc)
 
 - Project: `next-salesinvoice`
 - Purpose: safely edit SML ERP sales/service invoices in the connected PostgreSQL database
-- Current staging DB: `sml1_2026`
-- Frontend URL: `http://127.0.0.1:3000/`
-- Backend URL: `http://127.0.0.1:8080/`
-- Backend dev server was restarted in this session after the latest backend migration-behavior change
-- Latest health check: `GET /api/v1/health` returned healthy
+- Current staging DB: external SML server `demserver.3bbddns.com:47309/demo` (postgres/sml) — switched away from local `sml1_2026`
+- Frontend URL (local dev): `http://127.0.0.1:3000/`
+- Backend URL (local dev): `http://127.0.0.1:8080/`
+- Customer-facing deploy: docker compose on `192.168.2.109` exposing port 3040 (frontend) + 8085 (backend) via cloudflared quick tunnel
+- Latest tunnel URL (respawns each `./deploy.sh`): `https://remembered-peninsula-princess-accept.trycloudflare.com`
+- Admin login on demo DB: code `001` / password `001` (erp_user.title=`admin` → maps to Admin role)
 
 ## Stack
 
@@ -134,10 +135,18 @@ Commit หลักรอบ UX/A11y ล่าสุด: typography primitives �
 - Runtime startup/reconnect verifies database with `Verify()` only
 - It no longer silently creates `nsi_*` tables during status/startup
 - Explicit Admin migration uses `POST /api/v1/system/database-migrate`
-- Login/auth still depends on `nsi_app_users`; a brand-new SML database should be installed through Admin system action before normal use
+- Login/auth still depends on `nsi_app_users`; a brand-new SML database should be installed through Admin system action before normal use. For the current `demserver` demo DB the `nsi_*` schema was bootstrapped manually via `/tmp/nsi_migrate.sql` because admin user `001` already existed in SML.
 - **Database connection config is env-only** (`SML_DB_*`); runtime APIs for changing DB config (`database-bootstrap`, `database-config`, `database-reconnect`, `database-verify`) have been removed
 - Document search parser supports exact list/range syntax and falls back to fuzzy search for normal text
 - Audit document search uses the same parser behavior
+- **Doc number generator** (`previewNextDocNo` in `document_repository.go` ~line 2008) now supports SML formats with `@` marker (e.g. `@-YYMM####`). Substitution order: `@YYYYMM`, `@YYMM`, `@YYYY`, `@YY`, `@MM`, then bare `YYYYMM`/`YYMM`/`YYYY`/`YY`/`MM`, then `@` → `formatCode`. Tests in `document_repository_test.go`.
+- **`tax_doc_no` is synced to `doc_no`** on both apply (line ~519) and rollback (line ~933) paths.
+- **`Documents.List` returns total count** via separate `select count(*)` query (signature: `([]model.DocumentSummary, bool, int, error)`). Frontend `BulkInvoiceEditPage.tsx` displays `แสดง ${items.length} / ${total} บิล`.
+- **VAT totals recomputation on vat_type change / item deletion**:
+  - `calculateTotals(ctx, q, docNo, excludeItemCodes, vatType int16)` and `calculateTotalsByDocNo(..., vatType)` now derive per-line `sum_amount_exclude_vat` and `total_vat_value` via SQL `CASE` based on supplied `vatType`, using a fixed 7% rate (Thai standard — `ic_trans_detail` has NO `vat_rate` column on customer DB).
+  - Conventions: `vat_type` 0 = no VAT (excl=sum_amount, vat=0); 1 = VAT included in `sum_amount` (excl = round(sum_amount × 100/107, 2), vat = sum_amount − excl); 2 = VAT excluded (excl=sum_amount, vat = round(sum_amount × 7/100, 2)). `total_amount`: type 0 → sum_amount; type 1 → sum_amount; type 2 → sum_amount + vat.
+  - `ApplyChange` also PERSISTS the recomputed `sum_amount_exclude_vat` and `total_vat_value` to `ic_trans_detail` so saved rows stay consistent (single UPDATE combined with `vat_type`/`tax_type` change at line ~516).
+  - Deletion path: lines deleted from `ic_trans_detail` first, then `calculateTotals` sums remaining rows with the new vat_type → header `ic_trans` updated correctly.
 
 ## Dirty Worktree Summary
 
@@ -194,3 +203,5 @@ Passed in this session:
 - Stress test with production-like data sizes
 - Multi-user conflict/stress test
 - Full E2E seed/apply/rollback regression suite
+- VAT rate is hardcoded 7% in `calculateTotals` / detail UPDATE; if customer ever needs different rate (e.g. 0% export, future rate changes), source it from `ic_trans.vat_rate` (header has the column) via subquery or pass as param
+- Add unit/integration test for VAT recomputation (type 0/1/2 + deletion combinations) — existing tests cover doc-number generation only
