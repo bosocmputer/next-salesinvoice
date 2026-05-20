@@ -62,12 +62,14 @@ func NewRouter(
 	api.POST("/documents/bulk/apply-change", deps.authMiddleware(), deps.requireRole("Admin"), deps.writeRateLimiter("bulk_apply", 30), deps.bulkDocumentChangeApply)
 	api.POST("/documents/rollback", deps.authMiddleware(), deps.requireRole("Admin"), deps.writeRateLimiter("rollback", 30), deps.documentRollback)
 	api.GET("/documents/:docNo/details", deps.authMiddleware(), deps.documentDetails)
+	api.POST("/documents/items", deps.authMiddleware(), deps.documentsItems)
 	api.POST("/documents/:docNo/preview-change", deps.authMiddleware(), deps.documentChangePreview)
 	api.POST("/documents/:docNo/apply-change", deps.authMiddleware(), deps.requireRole("Admin"), deps.writeRateLimiter("doc_apply", 60), deps.documentChangeApply)
 	api.GET("/documents/running-number", deps.authMiddleware(), deps.runningNumber)
 	api.GET("/master/doc-formats", deps.authMiddleware(), deps.docFormats)
 	api.GET("/master/customers", deps.authMiddleware(), deps.customers)
 	api.GET("/master/products", deps.authMiddleware(), deps.products)
+	api.GET("/master/product-units", deps.authMiddleware(), deps.productUnits)
 	api.GET("/master/sale-types", deps.authMiddleware(), deps.saleTypes)
 	api.GET("/master/tax-types", deps.authMiddleware(), deps.taxTypes)
 	api.GET("/audit-logs", deps.authMiddleware(), deps.requireRole("Admin"), deps.auditLogs)
@@ -322,6 +324,54 @@ func (d RouterDeps) products(c *gin.Context) {
 	items, err := d.state.Current().Documents.SearchProducts(c.Request.Context(), c.Query("q"), parseBoundedInt(c.Query("limit"), 20, 1, 50))
 	if err != nil {
 		response.Error(c, nethttp.StatusInternalServerError, errorcode.DBConnection, "load products failed", err.Error())
+		return
+	}
+	response.OK(c, nethttp.StatusOK, "ok", gin.H{"items": items})
+}
+
+func (d RouterDeps) productUnits(c *gin.Context) {
+	code := strings.TrimSpace(c.Query("code"))
+	if code == "" {
+		response.Error(c, nethttp.StatusBadRequest, errorcode.InvalidInput, "invalid input", "code is required")
+		return
+	}
+	items, err := d.state.Current().Documents.ProductUnits(c.Request.Context(), code)
+	if err != nil {
+		response.Error(c, nethttp.StatusInternalServerError, errorcode.DBConnection, "load product units failed", err.Error())
+		return
+	}
+	response.OK(c, nethttp.StatusOK, "ok", gin.H{"items": items})
+}
+
+func (d RouterDeps) documentsItems(c *gin.Context) {
+	var body struct {
+		DocNos []string `json:"docNos"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		response.Error(c, nethttp.StatusBadRequest, errorcode.InvalidInput, "invalid request body", err.Error())
+		return
+	}
+	// Dedupe + trim + drop empties to keep query parameter clean.
+	seen := make(map[string]struct{}, len(body.DocNos))
+	cleaned := make([]string, 0, len(body.DocNos))
+	for _, v := range body.DocNos {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
+		if _, dup := seen[v]; dup {
+			continue
+		}
+		seen[v] = struct{}{}
+		cleaned = append(cleaned, v)
+	}
+	if len(cleaned) > 500 {
+		response.Error(c, nethttp.StatusBadRequest, errorcode.InvalidInput, "too many documents", "docNos must be 500 or fewer")
+		return
+	}
+	items, err := d.state.Current().Documents.ItemsByDocs(c.Request.Context(), cleaned)
+	if err != nil {
+		response.Error(c, nethttp.StatusInternalServerError, errorcode.DBConnection, "load items by docs failed", err.Error())
 		return
 	}
 	response.OK(c, nethttp.StatusOK, "ok", gin.H{"items": items})

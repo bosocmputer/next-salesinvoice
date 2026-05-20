@@ -30,6 +30,12 @@ type Config struct {
 	DBQueryTimeout               time.Duration
 	DBLockTimeout                time.Duration
 	DBIdleTxTimeout              time.Duration
+	// CbTransSyncEnabled controls whether ApplyChange also rebalances
+	// cb_trans + cb_trans_detail payment totals when a bill total changes
+	// (e.g. after deleting items or switching VAT type). Default true.
+	// Set NSI_CB_TRANS_SYNC=false to disable as an emergency rollback
+	// without redeploying.
+	CbTransSyncEnabled bool
 }
 
 func Load() (Config, error) {
@@ -52,6 +58,7 @@ func Load() (Config, error) {
 		DBQueryTimeout:               time.Duration(getEnvInt("SML_DB_QUERY_TIMEOUT_SECONDS", 30)) * time.Second,
 		DBLockTimeout:                time.Duration(getEnvInt("SML_DB_LOCK_TIMEOUT_SECONDS", 2)) * time.Second,
 		DBIdleTxTimeout:              time.Duration(getEnvInt("SML_DB_IDLE_TX_TIMEOUT_SECONDS", 10)) * time.Second,
+		CbTransSyncEnabled:           getEnvBool("NSI_CB_TRANS_SYNC", true),
 	}
 	return cfg, cfg.Validate()
 }

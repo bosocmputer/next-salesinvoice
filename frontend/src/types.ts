@@ -75,6 +75,12 @@ export type Option = {
 
 export type ProductOption = Option & {
   unitCode: string;
+  docCount?: number;
+};
+
+export type ProductUnit = {
+  code: string;
+  name: string;
 };
 
 export type DocumentDetailLine = {
@@ -98,6 +104,57 @@ export type RunningData = {
   nextDocNo: string;
 };
 
+export type NewLineInput = {
+  itemCode: string;
+  itemName: string;
+  unitCode: string;
+  qty: string;
+  price: string;
+  discount: string;
+  whCode: string;
+  shelfCode: string;
+};
+
+export type DocEdit = {
+  docNo: string;
+  removeItemCodes: string[];
+  addedLines: NewLineInput[];
+};
+
+export type DocumentPaymentDetail = {
+  lineNumber: number;
+  docType: number;
+  transNumber: string;
+  bankCode: string;
+  creditCardType: string;
+  chqDate: string;
+  amount: string;
+  sumAmount: string;
+};
+
+export type DocumentPayment = {
+  docNo: string;
+  transFlag: number;
+  transType: number;
+  payType: number;
+  totalAmount: string;
+  totalNetAmount: string;
+  totalAmountPay: string;
+  payCashAmount: string;
+  moneyChange: string;
+  cashAmount: string;
+  chqAmount: string;
+  tranferAmount: string;
+  cardAmount: string;
+  walletAmount: string;
+  couponAmount: string;
+  pointAmount: string;
+  depositAmount: string;
+  advanceAmount: string;
+  pettyCashAmount: string;
+  details: DocumentPaymentDetail[];
+};
+
 export type DocumentChangePreview = {
   docNo: string;
   before: DocumentSummary;
@@ -110,6 +167,9 @@ export type DocumentChangePreview = {
   };
   removedLines: DocumentDetailLine[];
   remainingLines: DocumentDetailLine[];
+  addedLines?: NewLineInput[];
+  paymentBefore?: DocumentPayment | null;
+  paymentAfter?: DocumentPayment | null;
 };
 
 export type BulkDocumentChangeRequest = {
@@ -120,6 +180,7 @@ export type BulkDocumentChangeRequest = {
   vatType: number;
   remark: string;
   removeItemCodes: string[];
+  perDocEdits?: DocEdit[];
 };
 
 export type BulkDocumentChangeItem = {
@@ -129,6 +190,7 @@ export type BulkDocumentChangeItem = {
   message: string;
   preview: DocumentChangePreview | null;
   removeHits: string[];
+  addedLines?: NewLineInput[];
 };
 
 export type BulkDocumentChangeResult = {

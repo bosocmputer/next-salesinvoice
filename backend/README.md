@@ -47,6 +47,7 @@ Documents:
 
 - `GET /api/v1/documents?from=&to=&page=&pageSize=&q=`
 - `GET /api/v1/documents/:docNo/details`
+- `POST /api/v1/documents/items` — body `{ "docNos": ["..."] }` (≤ 500). ตอบ unique item_code + name + unitCode + docCount จาก `ic_trans_detail`
 - `POST /api/v1/documents/bulk/preview-change`
 - `POST /api/v1/documents/bulk/apply-change`
 - `POST /api/v1/documents/rollback`
@@ -57,6 +58,7 @@ Master data:
 - `GET /api/v1/master/doc-formats`
 - `GET /api/v1/master/customers?q=&limit=`
 - `GET /api/v1/master/products?q=&limit=`
+- `GET /api/v1/master/product-units?code=<icCode>` — หน่วยของสินค้าจาก `ic_unit_use` left join `ic_unit` (order by `line_number`)
 - `GET /api/v1/master/sale-types`
 - `GET /api/v1/master/tax-types`
 
@@ -79,6 +81,25 @@ Compatibility/internal:
 - mixed list/range: `INV26050025:INV26050030,INV26050040`
 
 Invalid range/list syntax falls back to the normal fuzzy search path.
+
+## Per-Bill Row Editing
+
+`bulk/preview-change` และ `bulk/apply-change` รับ `perDocEdits: map[docNo]{ removeItemCodes: []string, addedLines: []NewLineInput }` เพิ่มจาก legacy global `removeItemCodes`
+
+- `removeItemCodes` ต่อบิล: ลบเฉพาะ row ของบิลนั้น
+- `addedLines`: เพิ่มรายการสินค้าใหม่ (`itemCode`, `itemName`, `unitCode`, `qty`, `price`, `discount`, optional `whCode`/`shelfCode`)
+
+### Clone-template insert
+
+`insertAddedDetailLines` ใช้ schema-agnostic strategy เพื่อหลีกเลี่ยงการ enumerate ~125 columns ของ `ic_trans_detail`:
+
+1. ดึง `roworder` ของบรรทัดแรกในบิลเดียวกันเป็น template
+2. Query `information_schema.columns` (ยกเว้น `roworder`) ได้ list คอลัมน์
+3. `INSERT INTO ic_trans_detail (cols) SELECT cols FROM ic_trans_detail WHERE roworder=$template RETURNING roworder`
+4. `UPDATE` เฉพาะฟิลด์ของบรรทัดใหม่ (line_number, item_code, qty, price, discount, sum_amount, costs/refs=0, create_date_time_now=now())
+5. `ApplyChange` UPDATE ตามมาเพื่อ override vat_type/tax_type/cust_code/inquiry_type/doc_no ของทั้งบิล
+
+ข้อดี: ครอบคลุม NOT NULL fields (เช่น `doc_date`, `doc_time`, `calc_flag=-1`) อัตโนมัติและทนต่อ schema upstream ที่อาจเพิ่มคอลัมน์ในอนาคต
 
 ## Tests
 

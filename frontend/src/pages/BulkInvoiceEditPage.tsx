@@ -35,20 +35,24 @@ import {
 } from "@mui/material";
 import type { GridColDef, GridRowSelectionModel } from "@mui/x-data-grid";
 import { useSearchParams } from "react-router-dom";
-import { AlertTriangle, ChevronLeft, ChevronRight, HelpCircle, RefreshCw, Search, X } from "lucide-react";
+import { AlertTriangle, ChevronLeft, ChevronRight, HelpCircle, Plus, RefreshCw, RotateCcw, Search, Trash2, X } from "lucide-react";
 import type {
   BulkDocumentChangeItem,
   BulkDocumentChangeRequest,
   BulkDocumentChangeResult,
   BulkPreviewFilter,
   DatabaseStatus,
+  DocEdit,
   DocFormat,
   DocumentChangePreview,
+  DocumentDetailLine,
   DocumentSummary,
+  NewLineInput,
   Option,
   PagedDocuments,
   PreviewChangeItem,
   ProductOption,
+  ProductUnit,
   UserClaims,
 } from "../types";
 import { apiGet, apiPost } from "../lib/api";
@@ -71,9 +75,7 @@ import { AppButton, EmptyState, MetricValue, PageLoading, StatusBadge } from "..
 import { DocCode, EmphasisText, Money, SectionTitle, compactActionButtonSx } from "../components/ui/typography";
 import {
   DocumentFact,
-  DocumentLinesPanel,
   InvoiceDetailDialog,
-  PreviewRemovedLinesPanel,
   RiskConfirmDialog,
   SummaryLine,
   TotalLine,
@@ -126,7 +128,8 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
   const [documents, setDocuments] = useState<PagedDocuments | null>(null);
   const [docFormats, setDocFormats] = useState<DocFormat[]>([]);
   const [customers, setCustomers] = useState<Option[]>([]);
-  const [products, setProducts] = useState<ProductOption[]>([]);
+  const [docItems, setDocItems] = useState<ProductOption[]>([]);
+  const [docItemsLoading, setDocItemsLoading] = useState(false);
   const [fromDate, setFromDate] = useState(() => searchParams.get("from") || initialFromDate);
   const [toDate, setToDate] = useState(() => searchParams.get("to") || initialToDate);
   const [search, setSearch] = useState(() => searchParams.get("q") || "");
@@ -134,11 +137,13 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
   const [selectedFormat, setSelectedFormat] = useState("");
   const [selectedCustomer, setSelectedCustomer] = useState("");
   const [customerSearch, setCustomerSearch] = useState("");
-  const [productSearch, setProductSearch] = useState("");
-  const [removeItemCodes, setRemoveItemCodes] = useState<string[]>([]);
-  const [selectedRemoveProducts, setSelectedRemoveProducts] = useState<ProductOption[]>([]);
-  const [inquiryType, setInquiryType] = useState(1);
-  const [vatType, setVatType] = useState(0);
+  // Per-doc line edits (remove existing + add new) authored in the preview screen.
+  // Map key = original docNo (matches BulkDocumentChangeItem.docNo).
+  const [perDocEdits, setPerDocEdits] = useState<Map<string, { removed: Set<string>; added: NewLineInput[] }>>(new Map());
+  // Sentinel for bulk-edit: vatType=-1 → "คงค่าเดิมของแต่ละบิล".
+  // inquiryType ถูกตัดออกจาก UI — ส่ง 0 (sentinel) ตลอด เพื่อให้ backend ใช้ค่าเดิมของแต่ละบิล.
+  const inquiryType = 0;
+  const [vatType, setVatType] = useState(-1);
   const [remark, setRemark] = useState("");
   const [preview, setPreview] = useState<BulkDocumentChangeResult | null>(null);
   const [previewFilter, setPreviewFilter] = useState<BulkPreviewFilter>("all");
@@ -147,7 +152,6 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [customerSearching, setCustomerSearching] = useState(false);
-  const [productSearching, setProductSearching] = useState(false);
   const [message, setMessage] = useState("");
   const [confirmApplyOpen, setConfirmApplyOpen] = useState(false);
   const [confirmApplyText, setConfirmApplyText] = useState("");
@@ -162,29 +166,56 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
   const selectedCustomerValue = selectedCustomer
     ? selectedCustomerOption || { code: selectedCustomer, name: selectedCustomer }
     : null;
-  const selectedRemoveProductValues = removeItemCodes.map((code) => (
-    selectedRemoveProducts.find((product) => product.code === code) || { code, name: code, unitCode: "" }
-  ));
-  const canPreview = selectedDocNos.length > 0 && selectedFormat && selectedCustomer;
+  // ผู้ใช้เลือกอย่างน้อย 1 อย่างก็พรีวิวได้ (ไม่บังคับลูกหนี้/format)
+  const hasAnyChange =
+    !!selectedCustomer ||
+    !!selectedFormat ||
+    vatType !== -1 ||
+    remark.trim() !== "";
+  const canPreview = selectedDocNos.length > 0 && hasAnyChange;
   const workflowHint = canPreview
-    ? `พร้อมพรีวิว ${selectedDocNos.length} บิล, ลูกหนี้ใหม่ ${selectedCustomer}`
+    ? `พร้อมพรีวิว ${selectedDocNos.length} บิล (ฟิลด์ที่เว้นว่าง = ใช้ค่าเดิมของแต่ละบิล)`
     : selectedDocNos.length
-      ? "ตั้งค่าการแก้ไขให้ครบ โดยเฉพาะลูกหนี้ใหม่ ก่อนพรีวิว"
+      ? "ระบุการแก้ไขอย่างน้อย 1 รายการ (ลูกหนี้ / ชุดเลข / ประเภทภาษี / หมายเหตุ)"
       : "เลือกบิลจากตารางก่อน แล้วค่อยตั้งค่าการแก้ไข";
   const readyPreviewCount = preview?.items.filter((item) => item.status === "ready").length || 0;
   const warningPreviewCount = preview?.items.filter((item) => item.status === "warning").length || 0;
   const blockedPreviewCount = preview?.items.filter((item) => item.status === "blocked" || item.status === "failed" || item.status === "skipped").length || 0;
   const writablePreviewCount = readyPreviewCount + warningPreviewCount;
-  const readyToApply = Boolean(isAdmin && preview && writablePreviewCount > 0 && busy === false);
+
+  // Per-doc edit helpers
+  function setPerDocEditEntry(
+    docNo: string,
+    updater: (current: { removed: Set<string>; added: NewLineInput[] }) => { removed: Set<string>; added: NewLineInput[] },
+  ) {
+    setPerDocEdits((m) => {
+      const next = new Map(m);
+      const cur = next.get(docNo) ?? { removed: new Set<string>(), added: [] };
+      next.set(docNo, updater(cur));
+      return next;
+    });
+  }
+  function effectiveLineCount(item: BulkDocumentChangeItem): number {
+    if (!item.preview) return 0;
+    const edit = perDocEdits.get(item.docNo);
+    const remainingCount = edit
+      ? item.preview.remainingLines.filter((l) => !edit.removed.has(l.itemCode)).length
+      : item.preview.remainingLines.length;
+    const addedCount = edit ? edit.added.length : 0;
+    return remainingCount + addedCount;
+  }
+  const hasEmptyAfterEdits = Boolean(preview && preview.items.some((item) => {
+    if (item.status !== "ready" && item.status !== "warning") return false;
+    return effectiveLineCount(item) === 0;
+  }));
+  const readyToApply = Boolean(isAdmin && preview && writablePreviewCount > 0 && busy === false && !hasEmptyAfterEdits);
   const visiblePreviewItems = preview?.items.filter((item) => {
     if (previewFilter === "all") return true;
     if (previewFilter === "blocked") return item.status === "blocked" || item.status === "failed" || item.status === "skipped";
     return item.status === "ready" || item.status === "warning";
   }) || [];
   const customerQuery = customerSearch.trim();
-  const productQuery = productSearch.trim();
   const showCustomerEmpty = customerQuery.length >= 2 && !selectedCustomer && !customerSearching && customers.length === 0;
-  const showProductEmpty = productQuery.length >= 2 && !productSearching && products.length === 0;
   const documentGridColumns = useMemo<GridColDef<DocumentSummary>[]>(() => [
     {
       field: "docDate",
@@ -216,11 +247,11 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
       headerName: "หมายเหตุ",
       minWidth: 160,
       flex: 1.4,
-      renderCell: (params) => (
-        <Typography noWrap title={maskInternalRemark(params.row.remark || "") || "-"} variant="body2">
-          {maskInternalRemark(params.row.remark || "") || "-"}
-        </Typography>
-      ),
+      renderCell: (params) => {
+        const text = maskInternalRemark(params.row.remark || "");
+        if (!text) return <Typography color="text.disabled" variant="body2">—</Typography>;
+        return <Typography noWrap title={text} variant="body2">{text}</Typography>;
+      },
     },
     {
       align: "right",
@@ -231,26 +262,27 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
       renderCell: (params) => <Money value={formatMoney(params.row.totalAmount)} />,
     },
     {
-      align: "right",
+      align: "center",
       field: "actions",
       filterable: false,
-      headerAlign: "right",
-      headerName: "รายละเอียด",
+      headerAlign: "center",
+      headerName: "",
       sortable: false,
-      width: 112,
+      width: 48,
       renderCell: (params) => (
-        <AppButton
-          onClick={(event) => {
-            event.stopPropagation();
-            setDetailDocNo(params.row.docNo);
-            setDetailOpen(true);
-          }}
-          size="small"
-          sx={compactActionButtonSx}
-          type="button"
-        >
-          ดูรายละเอียด
-        </AppButton>
+        <Tooltip arrow title="ดูรายละเอียดบิล">
+          <IconButton
+            aria-label="ดูรายละเอียดบิล"
+            onClick={(event) => {
+              event.stopPropagation();
+              setDetailDocNo(params.row.docNo);
+              setDetailOpen(true);
+            }}
+            size="small"
+          >
+            <ChevronRight size={18} />
+          </IconButton>
+        </Tooltip>
       ),
     },
   ], []);
@@ -263,6 +295,21 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
     void loadInitial();
   }, []);
 
+  // เมื่อผู้ใช้เปลี่ยน "จากวันที่" หรือ "ถึงวันที่" ให้โหลดรายการใหม่ทันที
+  // (debounce 250ms เผื่อ keyboard typing) — ข้าม run แรกเพราะ loadInitial
+  // จัดการการโหลดครั้งแรกอยู่แล้ว
+  const initialLoadRef = useRef(true);
+  useEffect(() => {
+    if (initialLoadRef.current) {
+      initialLoadRef.current = false;
+      return;
+    }
+    if (!fromDate || !toDate) return;
+    const timer = window.setTimeout(() => void loadDocuments(search, fromDate, toDate), 250);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fromDate, toDate]);
+
   useEffect(() => {
     const q = customerSearch.trim();
     if (selectedCustomer || q.length < 2) {
@@ -274,15 +321,22 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
   }, [customerSearch, selectedCustomer]);
 
   useEffect(() => {
-    const q = productSearch.trim();
-    if (q.length < 2) {
-      setProducts([]);
-      setProductSearching(false);
+    if (selectedDocNos.length === 0) {
+      setDocItems([]);
       return;
     }
-    const timer = window.setTimeout(() => void searchProducts(q), 250);
-    return () => window.clearTimeout(timer);
-  }, [productSearch]);
+    let cancelled = false;
+    setDocItemsLoading(true);
+    (async () => {
+      const response = await apiPost<{ items: ProductOption[] }>("/api/v1/documents/items", { docNos: selectedDocNos });
+      if (cancelled) return;
+      const items = response.success && response.data ? response.data.items : [];
+      setDocItems(items);
+      setDocItemsLoading(false);
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedDocNos]);
 
   async function loadInitial() {
     setLoading(true);
@@ -294,27 +348,33 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
     if (docs.success && docs.data) setDocuments(docs.data);
     if (formats.success && formats.data) {
       setDocFormats(formats.data.items);
-      setSelectedFormat((current) => current || formats.data?.items[0]?.code || "");
+      // Do NOT auto-pick a default — leave as "" (= "ใช้ค่าเดิมของแต่ละบิล")
     }
     if (customerList.success && customerList.data) setCustomers(customerList.data.items);
     setLoading(false);
   }
 
-  async function loadDocuments(nextSearch = search) {
+  async function loadDocuments(nextSearch = search, nextFrom = fromDate, nextTo = toDate) {
+    if (!nextFrom || !nextTo) return;
+    if (nextFrom > nextTo) {
+      setMessage("วันที่เริ่มต้นต้องไม่มากกว่าวันที่สิ้นสุด");
+      return;
+    }
     setLoading(true);
     setMessage("");
     setPreview(null);
     setPreviewFilter("all");
     const nextParams = new URLSearchParams();
-    nextParams.set("from", fromDate);
-    nextParams.set("to", toDate);
+    nextParams.set("from", nextFrom);
+    nextParams.set("to", nextTo);
     if (nextSearch.trim()) nextParams.set("q", nextSearch.trim());
     setSearchParams(nextParams, { replace: true });
-    const response = await apiGet<PagedDocuments>(documentsURL(fromDate, toDate, nextSearch));
+    const response = await apiGet<PagedDocuments>(documentsURL(nextFrom, nextTo, nextSearch));
     if (response.success && response.data) {
       setDocuments(response.data);
       setSelectedDocNos((current) => current.filter((docNo) => response.data?.items.some((item) => item.docNo === docNo)));
     } else {
+      setDocuments(null);
       setMessage(response.error?.detail || response.message || "โหลดรายการบิลไม่สำเร็จ");
     }
     setLoading(false);
@@ -352,19 +412,6 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
     setCustomerSearching(false);
   }
 
-  async function searchProducts(q = productSearch) {
-    if (q.trim().length < 2) {
-      setProducts([]);
-      setMessage("พิมพ์อย่างน้อย 2 ตัวอักษรเพื่อค้นหาสินค้า");
-      return;
-    }
-    setProductSearching(true);
-    const response = await apiGet<{ items: ProductOption[] }>(`/api/v1/master/products?q=${encodeURIComponent(q)}&limit=20`);
-    if (response.success && response.data) setProducts(response.data.items);
-    else setProducts([]);
-    setProductSearching(false);
-  }
-
   function selectCustomer(item: Option) {
     setSelectedCustomer(item.code);
     setCustomerSearch(`${item.code} - ${item.name}`);
@@ -395,14 +442,10 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
     setSelectedDocNos([]);
     setSelectedCustomer("");
     setCustomerSearch("");
-    setRemoveItemCodes([]);
-    setSelectedRemoveProducts([]);
-    setProductSearch("");
-    setProducts([]);
+    setPerDocEdits(new Map());
     setRemark("");
-    setSelectedFormat(docFormats[0]?.code || "");
-    setInquiryType(1);
-    setVatType(0);
+    setSelectedFormat("");
+    setVatType(-1);
   }
 
   function updateSelectionFromGrid(model: GridRowSelectionModel) {
@@ -419,6 +462,16 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
   }
 
   function buildBulkRequest(): BulkDocumentChangeRequest {
+    const perDocEditsArr: DocEdit[] = [];
+    perDocEdits.forEach((edits, docNo) => {
+      const removed = Array.from(edits.removed);
+      if (removed.length === 0 && edits.added.length === 0) return;
+      perDocEditsArr.push({
+        docNo,
+        removeItemCodes: removed,
+        addedLines: edits.added,
+      });
+    });
     return {
       docNos: selectedDocNos,
       docFormatCode: selectedFormat,
@@ -426,7 +479,8 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
       inquiryType,
       vatType,
       remark,
-      removeItemCodes,
+      removeItemCodes: [],
+      ...(perDocEditsArr.length > 0 ? { perDocEdits: perDocEditsArr } : {}),
     };
   }
 
@@ -441,6 +495,8 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
     try {
       const response = await apiPost<BulkDocumentChangeResult>("/api/v1/documents/bulk/preview-change", buildBulkRequest());
       if (response.success && response.data) {
+        // Reset per-doc edits so the new preview starts from a clean slate.
+        setPerDocEdits(new Map());
         setPreview(response.data);
         setPreviewFilter("all");
         setPreviewDialogDocNo(getInitialReviewDocNo(response.data.items));
@@ -480,11 +536,20 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
     <Stack spacing={1.5} sx={{ pb: selectedDocNos.length ? { xs: 11, sm: 8 } : 0 }}>
       {message ? <Alert severity={message.includes("สำเร็จ") || message.includes("เลือก") ? "success" : "warning"}>{message}</Alert> : null}
 
+      <Box sx={{ alignItems: { sm: "flex-end" }, display: "flex", flexDirection: { xs: "column", sm: "row" }, gap: 1, justifyContent: "space-between" }}>
+        <Box>
+          <SectionTitle level="h2">แก้ไขบิลครั้งละหลายใบ</SectionTitle>
+          <Typography color="text.secondary" variant="body2">
+            เลือกบิลในตารางด้านล่าง แล้วกด “ตั้งค่าและพรีวิว” เพื่อเปลี่ยนลูกค้า / ชุดเอกสาร หรือลบสินค้าพร้อมกันหลายใบ
+          </Typography>
+        </Box>
+        <Typography color={loading ? "text.secondary" : "text.primary"} sx={{ fontWeight: 600, whiteSpace: "nowrap" }} variant="subtitle2">
+          {loading ? "กำลังโหลด…" : `พบ ${(documents?.total ?? items.length).toLocaleString("th-TH")} บิล`}
+        </Typography>
+      </Box>
+
       <Paper variant="outlined" sx={{ minWidth: 0, overflow: "hidden" }}>
         <Stack spacing={{ xs: 1.25, sm: 1.5 }} sx={{ p: { xs: 1.25, sm: 1.5 } }}>
-          <Stack direction="row" spacing={1} sx={{ alignItems: "center", justifyContent: "flex-end" }}>
-            <StatusBadge>{loading ? "กำลังโหลด" : `${items.length.toLocaleString("th-TH")} / ${(documents?.total ?? items.length).toLocaleString("th-TH")} บิล`}</StatusBadge>
-          </Stack>
           <Box sx={{ alignItems: "flex-start", display: "grid", gap: 1, gridTemplateColumns: { xs: "1fr 1fr", lg: "150px 150px minmax(220px, 1fr) auto" }, minWidth: 0 }}>
             <TextField
               label="จากวันที่"
@@ -504,7 +569,8 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
               inputRef={searchInputRef}
               label="ค้นหา"
               onChange={(event) => setSearch(event.target.value)}
-              placeholder="เลขบิล / รหัสลูกค้า / หมายเหตุ  (กด Ctrl+K)"
+              onKeyDown={(event) => { if (event.key === "Enter") void loadDocuments(); }}
+              placeholder="เลขบิล / รหัสลูกค้า / หมายเหตุ  (กด Ctrl+K, Enter เพื่อค้นหา)"
               size="small"
               sx={{ gridColumn: { xs: "1 / -1", lg: "auto" } }}
               value={search}
@@ -534,16 +600,20 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
                 },
               }}
             />
-            <Stack direction="row" spacing={1} sx={{ alignItems: "stretch", gridColumn: { xs: "1 / -1", lg: "auto" } }}>
-              <AppButton disabled={loading} onClick={() => void loadDocuments()} size="small" sx={{ flex: { xs: 1, lg: "0 0 auto" }, minHeight: 40, minWidth: { lg: 112 } }} tone="primary">ค้นหา</AppButton>
-              <AppButton disabled={loading} onClick={() => void loadDocuments()} size="small" startIcon={<RefreshCw size={15} />} sx={{ flex: { xs: 1, lg: "0 0 auto" }, minHeight: 40, minWidth: { lg: 112 } }}>โหลดใหม่</AppButton>
+            <Stack direction="row" spacing={0.5} sx={{ alignItems: "center", gridColumn: { xs: "1 / -1", lg: "auto" } }}>
+              <Tooltip arrow title="โหลดข้อมูลใหม่">
+                <span>
+                  <IconButton aria-label="โหลดใหม่" disabled={loading} onClick={() => void loadDocuments()} size="medium" sx={{ border: 1, borderColor: "divider", borderRadius: 1, height: 40, width: 40 }}>
+                    <RefreshCw size={16} />
+                  </IconButton>
+                </span>
+              </Tooltip>
             </Stack>
           </Box>
           {selectedDocNos.length ? (
             <SelectionActionBar
               busy={busy}
               canPreview={Boolean(canPreview)}
-              removeCount={removeItemCodes.length}
               selectedCount={selectedDocNos.length}
               selectedCustomer={selectedCustomer}
               selectedFormat={selectedFormat}
@@ -611,6 +681,7 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
               columnHeaderHeight={44}
               density="standard"
               hideFooterSelectedRowCount
+              hideFooterPagination={(documents?.total ?? items.length) <= 100}
               disableRowSelectionExcludeModel
               disableRowSelectionOnClick
               getRowId={(row) => row.docNo}
@@ -706,9 +777,9 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
                   renderInput={(params) => (
                     <TextField
                       {...params}
+                      helperText="เว้นว่างเพื่อใช้ลูกหนี้เดิมของแต่ละบิล"
                       label="ลูกหนี้ใหม่"
                       placeholder="พิมพ์รหัสหรือชื่อลูกหนี้"
-                      required
                       size="small"
                       slotProps={{
                         ...params.slotProps,
@@ -738,88 +809,29 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
                   value={selectedCustomerValue}
                 />
                 <TextField
+                  helperText="เว้นว่างเพื่อใช้ชุดเลขเดิมของแต่ละบิล (ไม่ออกเลขใหม่)"
                   label="ชุดเลขเอกสารใหม่"
                   onChange={(event) => { setSelectedFormat(event.target.value); resetPreview(); }}
                   select
                   size="small"
+                  slotProps={{ inputLabel: { shrink: true }, input: { notched: true }, select: { displayEmpty: true } }}
                   value={selectedFormat}
                 >
+                  <MenuItem value=""><Typography color="text.disabled" variant="body2">— กรุณาเลือก (ใช้ค่าเดิมของแต่ละบิล) —</Typography></MenuItem>
                   {docFormats.map((item) => <MenuItem key={item.code} value={item.code}>{item.code} - {item.name}</MenuItem>)}
                 </TextField>
                 <TextField
-                  label="ประเภทการขาย"
-                  onChange={(event) => { setInquiryType(Number(event.target.value)); resetPreview(); }}
-                  select
-                  size="small"
-                  value={inquiryType}
-                >
-                  {Object.entries(saleTypeLabels).map(([value, label]) => <MenuItem key={value} value={value}>{label}</MenuItem>)}
-                </TextField>
-                <TextField
+                  helperText="เว้นว่างเพื่อใช้ประเภทภาษีเดิม"
                   label="ประเภทภาษี"
                   onChange={(event) => { setVatType(Number(event.target.value)); resetPreview(); }}
                   select
                   size="small"
+                  slotProps={{ inputLabel: { shrink: true }, input: { notched: true }, select: { displayEmpty: true } }}
                   value={vatType}
                 >
+                  <MenuItem value={-1}><Typography color="text.disabled" variant="body2">— กรุณาเลือก (ใช้ค่าเดิมของแต่ละบิล) —</Typography></MenuItem>
                   {Object.entries(taxTypeLabels).map(([value, label]) => <MenuItem key={value} value={value}>{label}</MenuItem>)}
                 </TextField>
-                <Autocomplete<ProductOption, true, false, false>
-                  filterOptions={(options) => options}
-                  getOptionLabel={(option) => `${option.code} - ${option.name}`}
-                  inputValue={productSearch}
-                  loading={productSearching}
-                  loadingText="กำลังค้นหาสินค้า..."
-                  multiple
-                  noOptionsText={productQuery.length < 2 ? "พิมพ์อย่างน้อย 2 ตัวอักษรเพื่อค้นหาสินค้า" : showProductEmpty ? "ไม่พบสินค้าที่ตรงกับคำค้นนี้" : "ไม่พบข้อมูล"}
-                  onChange={(_, values) => {
-                    resetPreview();
-                    setSelectedRemoveProducts(values);
-                    setRemoveItemCodes(values.map((item) => item.code));
-                    setProductSearch("");
-                    setProducts([]);
-                  }}
-                  onInputChange={(_, value, reason) => {
-                    if (reason === "reset") return;
-                    setProductSearch(value);
-                    resetPreview();
-                  }}
-                  options={productQuery.length >= 2 ? products.filter((product) => !removeItemCodes.includes(product.code)) : []}
-                  renderInput={(params) => (
-                    <TextField
-                      {...params}
-                      helperText="เลือกได้มากกว่า 1 รายการ ถ้าเว้นว่างจะเปลี่ยนเฉพาะหัวบิล"
-                      label="สินค้าที่ต้องการลบในบิล"
-                      placeholder="พิมพ์รหัสหรือชื่อสินค้า"
-                      size="small"
-                      slotProps={{
-                        ...params.slotProps,
-                        input: {
-                          ...params.slotProps?.input,
-                          endAdornment: (
-                            <>
-                              {productSearching ? <CircularProgress color="inherit" size={16} /> : null}
-                              {params.slotProps?.input?.endAdornment}
-                            </>
-                          ),
-                        },
-                      }}
-                    />
-                  )}
-                  renderOption={(props, option) => {
-                    const { key, ...optionProps } = props;
-                    return (
-                      <Box component="li" key={key} {...optionProps}>
-                        <Box>
-                          <DocCode value={option.code} />
-                          <Typography color="text.secondary" variant="caption">{option.name}</Typography>
-                        </Box>
-                      </Box>
-                    );
-                  }}
-                  sx={{ gridColumn: { xs: "auto", sm: "1 / -1" } }}
-                  value={selectedRemoveProductValues}
-                />
                 <TextField
                   label="หมายเหตุใหม่"
                   minRows={2}
@@ -842,7 +854,6 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
       {previewing ? (
         <PreviewLoadingDialog
           docCount={selectedDocNos.length}
-          removeCount={removeItemCodes.length}
           selectedCustomer={selectedCustomer}
           selectedFormat={selectedFormat}
         />
@@ -975,10 +986,14 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
           busy={busy}
           canApply={isAdmin}
           readyToApply={readyToApply}
+          hasEmptyAfterEdits={hasEmptyAfterEdits}
           result={preview}
           selectedDocNo={previewDialogDocNo}
           selectedFormat={selectedFormat}
           selectedCustomer={selectedCustomer}
+          requestedVatType={vatType}
+          perDocEdits={perDocEdits}
+          onUpdateEdit={setPerDocEditEntry}
           onClose={() => setPreviewDialogOpen(false)}
           onRequestApply={() => {
             setPreviewDialogOpen(false);
@@ -1003,7 +1018,6 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
             <SummaryLine label="บิลที่จะส่งเข้า SML" value={`${writablePreviewCount} บิล`} strong />
             <SummaryLine label="ชุดเลขใหม่" value={selectedFormat || "-"} />
             <SummaryLine label="ลูกหนี้ใหม่" value={selectedCustomer || "-"} />
-            <SummaryLine label="สินค้าที่จะลบ" value={removeItemCodes.length ? removeItemCodes.join(", ") : "ไม่มี"} />
           </Box>
           <TextField
             autoFocus
@@ -1023,10 +1037,14 @@ function BulkPreviewDialog({
   busy,
   canApply,
   readyToApply,
+  hasEmptyAfterEdits,
   result,
   selectedDocNo,
   selectedFormat,
   selectedCustomer,
+  requestedVatType,
+  perDocEdits,
+  onUpdateEdit,
   onClose,
   onRequestApply,
   onSelectDoc,
@@ -1034,10 +1052,17 @@ function BulkPreviewDialog({
   busy: boolean;
   canApply: boolean;
   readyToApply: boolean;
+  hasEmptyAfterEdits: boolean;
   result: BulkDocumentChangeResult;
   selectedDocNo: string;
   selectedFormat: string;
   selectedCustomer: string;
+  requestedVatType: number;
+  perDocEdits: Map<string, { removed: Set<string>; added: NewLineInput[] }>;
+  onUpdateEdit: (
+    docNo: string,
+    updater: (current: { removed: Set<string>; added: NewLineInput[] }) => { removed: Set<string>; added: NewLineInput[] },
+  ) => void;
   onClose: () => void;
   onRequestApply: () => void;
   onSelectDoc: (docNo: string) => void;
@@ -1056,11 +1081,31 @@ function BulkPreviewDialog({
   const dialogMaxWidth = canNavigate ? "xl" : "lg";
   const canRequestApply = canApply && readyToApply && !busy;
   const selectedIsWritable = selectedItem?.status === "ready" || selectedItem?.status === "warning";
+  const selectedDocKey = selectedItem?.docNo || "";
+  const selectedEdit = perDocEdits.get(selectedDocKey);
+  // Effective vat type used for client-side recompute: requested override, or original.
+  const effectiveVatType = requestedVatType !== -1
+    ? requestedVatType
+    : (selectedPreview?.after.vatType ?? selectedPreview?.before.vatType ?? 0);
+  const recomputed = selectedPreview && selectedEdit
+    ? recomputeClientTotals(selectedPreview.remainingLines, selectedEdit.removed, selectedEdit.added, effectiveVatType)
+    : null;
+  const displayLineCount = selectedPreview
+    ? (selectedEdit
+        ? selectedPreview.remainingLines.filter((l) => !selectedEdit.removed.has(l.itemCode)).length + selectedEdit.added.length
+        : selectedPreview.totals.lineCount)
+    : 0;
+  const displayTotalValue = recomputed ? recomputed.totalValue : selectedPreview?.after.totalValue ?? "";
+  const displayTotalVat = recomputed ? recomputed.totalVatValue : selectedPreview?.totals.totalVatValue ?? "";
+  const displayTotalAmount = recomputed ? recomputed.totalAmount : selectedPreview?.totals.totalAmount ?? "";
+  const selectedBillIsEmpty = selectedIsWritable && selectedPreview ? displayLineCount === 0 : false;
   const footerProgressText = !canApply
     ? "สิทธิ์ User ดูพรีวิวได้เท่านั้น ต้องให้ Admin เป็นผู้ส่งเข้า SML"
-    : writableCount
-      ? `ส่งเข้า SML ได้ ${writableCount} บิล${nonWritableCount ? `, ระบบจะไม่ส่ง ${nonWritableCount} บิล` : ""}`
-      : "ไม่มีบิลที่ระบบส่งเข้า SML ได้";
+    : hasEmptyAfterEdits
+      ? "มีบิลที่ไม่มีสินค้าเหลือ ต้องยกเลิกการลบก่อนส่ง"
+      : writableCount
+        ? `ส่งเข้า SML ได้ ${writableCount} บิล${nonWritableCount ? `, ระบบจะไม่ส่ง ${nonWritableCount} บิล` : ""}`
+        : "ไม่มีบิลที่ระบบส่งเข้า SML ได้";
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -1108,6 +1153,16 @@ function BulkPreviewDialog({
             </Alert>
           ) : null}
 
+          {hasEmptyAfterEdits ? (
+            <Alert severity="error">
+              มีบิลที่ลบสินค้าจนไม่เหลือรายการแล้ว ต้องเพิ่มสินค้าหรือยกเลิกการลบก่อนจึงจะส่งเข้า SML ได้
+            </Alert>
+          ) : null}
+
+          <Alert severity="info">
+            ระบบจะปรับ <strong>cb_trans / cb_trans_detail</strong> ให้ตรงกับยอดบิลใหม่อัตโนมัติ (ยอดชำระ = ยอดบิลใหม่)
+          </Alert>
+
           <Box sx={{ alignItems: "start", display: "grid", gap: 1.5, gridTemplateColumns: { xs: "1fr", md: canNavigate ? "340px minmax(0, 1fr)" : "1fr" } }}>
             {canNavigate ? (
               <BulkReviewQueuePanel
@@ -1153,10 +1208,31 @@ function BulkPreviewDialog({
                     <DocumentFact changed={valueChanged(selectedPreview.after.vatType, selectedPreview.before.vatType)} label="ประเภทภาษี" previousValue={taxTypeLabels[selectedPreview.before.vatType] || `${selectedPreview.before.vatType}`} value={taxTypeLabels[selectedPreview.after.vatType] || `${selectedPreview.after.vatType}`} />
                   </Box>
 
-                  <DocumentLinesPanel docNo={selectedPreview.after.docNo} lines={selectedPreview.remainingLines} />
+                  <EditableDocumentLinesPanel
+                    docNo={selectedPreview.after.docNo}
+                    lines={selectedPreview.remainingLines}
+                    removed={selectedEdit?.removed}
+                    added={selectedEdit?.added || []}
+                    onToggleRemove={(itemCode) => onUpdateEdit(selectedDocKey, (cur) => {
+                      const next = new Set(cur.removed);
+                      if (next.has(itemCode)) next.delete(itemCode);
+                      else next.add(itemCode);
+                      return { ...cur, removed: next };
+                    })}
+                    onRemoveAdded={(idx) => onUpdateEdit(selectedDocKey, (cur) => ({
+                      ...cur,
+                      added: cur.added.filter((_, i) => i !== idx),
+                    }))}
+                    onAdd={(line) => onUpdateEdit(selectedDocKey, (cur) => ({
+                      ...cur,
+                      added: [...cur.added, line],
+                    }))}
+                  />
 
-                  {selectedPreview.removedLines.length ? (
-                    <PreviewRemovedLinesPanel lines={selectedPreview.removedLines} />
+                  {selectedBillIsEmpty ? (
+                    <Alert severity="error">
+                      บิลนี้ไม่มีสินค้าเหลือ ต้องยกเลิกการลบอย่างน้อย 1 รายการก่อนจะส่งเข้า SML ได้
+                    </Alert>
                   ) : null}
 
                   <Stack spacing={1.5}>
@@ -1168,12 +1244,14 @@ function BulkPreviewDialog({
                       ) : null}
                     </Paper>
                     <Box sx={{ display: "grid", gap: 1, gridTemplateColumns: { xs: "1fr", sm: "repeat(2, 1fr)", md: "repeat(4, 1fr)" } }}>
-                      <TotalLine changed={selectedPreview.removedLines.length > 0} label="รายการคงเหลือ" previousValue={`${selectedPreview.remainingLines.length + selectedPreview.removedLines.length} รายการ`} value={`${selectedPreview.totals.lineCount} รายการ`} />
-                      <TotalLine label="มูลค่าสินค้า" value={formatMoney(selectedPreview.after.totalValue)} />
-                      <TotalLine changed={moneyValueChanged(selectedPreview.totals.totalVatValue, selectedPreview.before.totalVatValue)} label="มูลค่าภาษี" previousValue={formatMoney(selectedPreview.before.totalVatValue)} value={formatMoney(selectedPreview.totals.totalVatValue)} />
-                      <TotalLine changed={moneyValueChanged(selectedPreview.totals.totalAmount, selectedPreview.before.totalAmount)} label="ยอดสุทธิใหม่" previousValue={formatMoney(selectedPreview.before.totalAmount)} value={formatMoney(selectedPreview.totals.totalAmount)} strong />
+                      <TotalLine changed={displayLineCount !== selectedPreview.remainingLines.length} label="รายการคงเหลือ" previousValue={`${selectedPreview.remainingLines.length + selectedPreview.removedLines.length} รายการ`} value={`${displayLineCount} รายการ`} />
+                      <TotalLine label="มูลค่าสินค้า" value={formatMoney(displayTotalValue)} />
+                      <TotalLine changed={moneyValueChanged(displayTotalVat, selectedPreview.before.totalVatValue)} label="มูลค่าภาษี" previousValue={formatMoney(selectedPreview.before.totalVatValue)} value={formatMoney(displayTotalVat)} />
+                      <TotalLine changed={moneyValueChanged(displayTotalAmount, selectedPreview.before.totalAmount)} label="ยอดสุทธิใหม่" previousValue={formatMoney(selectedPreview.before.totalAmount)} value={formatMoney(displayTotalAmount)} strong />
                     </Box>
                   </Stack>
+
+                  <PaymentChangePreviewPanel preview={selectedPreview} />
                 </>
               ) : (
                 <EmptyState
@@ -1201,12 +1279,10 @@ function BulkPreviewDialog({
 
 function PreviewLoadingDialog({
   docCount,
-  removeCount,
   selectedCustomer,
   selectedFormat,
 }: {
   docCount: number;
-  removeCount: number;
   selectedCustomer: string;
   selectedFormat: string;
 }) {
@@ -1229,7 +1305,6 @@ function PreviewLoadingDialog({
             <SummaryLine label="ชุดเลขใหม่" value={selectedFormat || "-"} />
             <SummaryLine label="ลูกหนี้ใหม่" value={selectedCustomer || "-"} />
             <SummaryLine label="บิลที่เลือก" value={`${docCount} บิล`} strong />
-            <SummaryLine label="สินค้าที่จะลบ" value={removeCount ? `${removeCount} รายการ` : "ไม่มี"} />
           </Box>
           <Typography color="text.secondary" variant="caption">
             ถ้าเลือกหลายสิบหรือหลายร้อยบิล ขั้นตอนนี้อาจใช้เวลานานตามจำนวนบิลและความเร็วฐานข้อมูล
@@ -1309,7 +1384,6 @@ function BulkReviewQueuePanel({
 function SelectionActionBar({
   busy,
   canPreview,
-  removeCount,
   selectedCount,
   selectedCustomer,
   selectedFormat,
@@ -1320,7 +1394,6 @@ function SelectionActionBar({
 }: {
   busy: boolean;
   canPreview: boolean;
-  removeCount: number;
   selectedCount: number;
   selectedCustomer: string;
   selectedFormat: string;
@@ -1333,7 +1406,6 @@ function SelectionActionBar({
   const chips = canPreview ? [
     selectedCustomer ? `ลูกหนี้ใหม่ ${selectedCustomer}` : "",
     selectedFormat ? `ชุดเอกสารใหม่ ${selectedFormat}` : "",
-    removeCount ? `ลบสินค้า ${removeCount} รายการ` : "",
   ].filter(Boolean) : [];
 
   const inner = (
@@ -1414,25 +1486,35 @@ function SelectionActionBar({
 
 function PreviewChangeSummaryPanel({ preview }: { preview: DocumentChangePreview }) {
   const changes = buildPreviewChangeItems(preview);
-  const changedCount = changes.filter((item) => item.changed).length;
+  const changedItems = changes.filter((item) => item.changed);
+  const unchangedItems = changes.filter((item) => !item.changed);
+  const changedCount = changedItems.length;
   const removedCount = preview.removedLines.length;
 
   return (
     <Paper variant="outlined" sx={{ p: 1.25 }}>
       <Stack spacing={1.25}>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ alignItems: { sm: "center" }, justifyContent: "space-between" }}>
-          <Box sx={{ minWidth: 0 }}>
-            <EmphasisText>จุดเปลี่ยนที่ต้องโฟกัส</EmphasisText>
-            <Typography color="text.secondary" variant="caption">ช่องที่มีพื้นหลังสีอ่อนคือข้อมูลที่ระบบจะเปลี่ยนก่อนส่งเข้า SML</Typography>
-          </Box>
+          <EmphasisText>จุดเปลี่ยนที่ต้องโฟกัส</EmphasisText>
           <Stack direction="row" spacing={0.75} sx={{ flexWrap: "wrap" }}>
             <Chip color={changedCount ? "warning" : "default"} label={`${changedCount} จุดเปลี่ยน`} size="small" variant={changedCount ? "filled" : "outlined"} />
             {removedCount ? <Chip color="error" label={`ลบสินค้า ${removedCount} รายการ`} size="small" /> : null}
           </Stack>
         </Stack>
-        <Box sx={{ display: "grid", gap: 1, gridTemplateColumns: { xs: "1fr", sm: "repeat(2, 1fr)", lg: "repeat(4, 1fr)" } }}>
-          {changes.map((change) => <PreviewChangedFact change={change} key={change.key} />)}
-        </Box>
+        {changedCount ? (
+          <Box sx={{ display: "grid", gap: 1, gridTemplateColumns: { xs: "1fr", sm: "repeat(2, 1fr)", lg: "repeat(4, 1fr)" } }}>
+            {changedItems.map((change) => <PreviewChangedFact change={change} key={change.key} />)}
+          </Box>
+        ) : (
+          <Typography color="text.secondary" variant="body2">
+            {removedCount ? `ไม่มีการเปลี่ยนแปลงระดับเอกสาร (มีเฉพาะการลบรายการสินค้า ${removedCount} รายการ)` : "ไม่มีการเปลี่ยนแปลง"}
+          </Typography>
+        )}
+        {unchangedItems.length ? (
+          <Typography color="text.disabled" variant="caption">
+            คงเดิม: {unchangedItems.map((item) => item.label).join(", ")}
+          </Typography>
+        ) : null}
       </Stack>
     </Paper>
   );
@@ -1464,6 +1546,137 @@ function PreviewChangedFact({ change }: { change: PreviewChangeItem }) {
   );
 }
 
+const CB_DOC_TYPE_LABELS: Record<number, string> = {
+  1: "เงินสด",
+  2: "เช็ค",
+  3: "บัตรเครดิต",
+  4: "เงินสดย่อย",
+  5: "ตัดเงินล่วงหน้า",
+  9: "คูปอง",
+};
+
+// PaymentChangePreviewPanel แสดงข้อมูลการชำระเงิน (cb_trans + cb_trans_detail)
+// ก่อนและหลังการ apply ตามที่ระบบจะ sync ให้ตรงกับยอดบิลใหม่
+function PaymentChangePreviewPanel({ preview }: { preview: DocumentChangePreview }) {
+  const before = preview.paymentBefore;
+  const after = preview.paymentAfter;
+  if (!before) {
+    return (
+      <Paper variant="outlined" sx={{ p: 1.25 }}>
+        <Stack spacing={0.5}>
+          <EmphasisText>การชำระเงิน (cb_trans)</EmphasisText>
+          <Typography color="text.secondary" variant="body2">
+            บิลนี้ไม่มีข้อมูลใน cb_trans (เช่น ขายเชื่อ/ลูกหนี้) — ระบบจะไม่ปรับยอดชำระ
+          </Typography>
+        </Stack>
+      </Paper>
+    );
+  }
+  const fields: Array<{ key: keyof PaymentRow; label: string }> = [
+    { key: "cashAmount", label: "เงินสด" },
+    { key: "chqAmount", label: "เช็ค" },
+    { key: "tranferAmount", label: "โอน" },
+    { key: "cardAmount", label: "บัตรเครดิต" },
+    { key: "walletAmount", label: "Wallet" },
+    { key: "couponAmount", label: "คูปอง" },
+    { key: "pointAmount", label: "พอยต์" },
+    { key: "depositAmount", label: "มัดจำ" },
+    { key: "advanceAmount", label: "เงินล่วงหน้า" },
+    { key: "pettyCashAmount", label: "เงินสดย่อย" },
+  ];
+  // แสดงเฉพาะช่องที่ก่อนหรือหลังมียอด >0 เพื่อลด noise
+  const visible = fields.filter((f) =>
+    moneyValueNonZero(String(before[f.key] ?? "")) || (after && moneyValueNonZero(String(after[f.key] ?? "")))
+  );
+  return (
+    <Paper variant="outlined" sx={{ p: 1.25 }}>
+      <Stack spacing={1}>
+        <EmphasisText>การชำระเงิน (cb_trans)</EmphasisText>
+        <Box sx={{ display: "grid", gap: 1, gridTemplateColumns: { xs: "1fr", sm: "repeat(2, 1fr)", md: "repeat(3, 1fr)" } }}>
+          <TotalLine
+            changed={after ? moneyValueChanged(after.totalAmountPay, before.totalAmountPay) : false}
+            label="ยอดชำระรวม"
+            previousValue={formatMoney(before.totalAmountPay)}
+            value={formatMoney(after?.totalAmountPay ?? before.totalAmountPay)}
+            strong
+          />
+          <TotalLine
+            changed={after ? moneyValueChanged(after.payCashAmount, before.payCashAmount) : false}
+            label="รับเงินสด"
+            previousValue={formatMoney(before.payCashAmount)}
+            value={formatMoney(after?.payCashAmount ?? before.payCashAmount)}
+          />
+          <TotalLine
+            changed={after ? moneyValueChanged(after.moneyChange, before.moneyChange) : false}
+            label="เงินทอน"
+            previousValue={formatMoney(before.moneyChange)}
+            value={formatMoney(after?.moneyChange ?? before.moneyChange)}
+          />
+        </Box>
+        {visible.length ? (
+          <Box sx={{ display: "grid", gap: 0.75, gridTemplateColumns: { xs: "1fr", sm: "repeat(2, 1fr)", md: "repeat(3, 1fr)" } }}>
+            {visible.map((f) => (
+              <TotalLine
+                key={f.key}
+                changed={after ? moneyValueChanged(String(after[f.key] ?? ""), String(before[f.key] ?? "")) : false}
+                label={f.label}
+                previousValue={formatMoney(String(before[f.key] ?? ""))}
+                value={formatMoney(after ? String(after[f.key] ?? "") : String(before[f.key] ?? ""))}
+              />
+            ))}
+          </Box>
+        ) : null}
+        {before.details.length ? (
+          <Box>
+            <Typography color="text.secondary" sx={{ display: "block", mb: 0.5 }} variant="caption">
+              รายละเอียดการชำระ ({before.details.length} รายการ)
+            </Typography>
+            <TableContainer component={Paper} variant="outlined">
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>#</TableCell>
+                    <TableCell>ประเภทชำระ</TableCell>
+                    <TableCell>เลขที่อ้างอิง</TableCell>
+                    <TableCell>ธนาคาร / บัตร</TableCell>
+                    <TableCell align="right">ยอดเดิม</TableCell>
+                    <TableCell align="right">ยอดใหม่</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {before.details.map((row, idx) => {
+                    const a = after?.details[idx];
+                    const changed = a ? moneyValueChanged(a.amount, row.amount) : false;
+                    const docTypeLabel = CB_DOC_TYPE_LABELS[row.docType] ?? `doc_type=${row.docType}`;
+                    return (
+                      <TableRow key={`${row.lineNumber}-${idx}`}>
+                        <TableCell>{row.lineNumber}</TableCell>
+                        <TableCell>{docTypeLabel}</TableCell>
+                        <TableCell>{row.transNumber || "-"}</TableCell>
+                        <TableCell>{[row.bankCode, row.creditCardType].filter(Boolean).join(" / ") || "-"}</TableCell>
+                        <TableCell align="right" sx={{ fontVariantNumeric: "tabular-nums", textDecoration: changed ? "line-through" : "none", color: changed ? "text.secondary" : "text.primary" }}>{formatMoney(row.amount)}</TableCell>
+                        <TableCell align="right" sx={{ fontVariantNumeric: "tabular-nums", fontWeight: changed ? 800 : 500, color: changed ? "warning.main" : "text.primary" }}>{formatMoney(a ? a.amount : row.amount)}</TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          </Box>
+        ) : null}
+      </Stack>
+    </Paper>
+  );
+}
+
+type PaymentRow = NonNullable<DocumentChangePreview["paymentBefore"]>;
+
+function moneyValueNonZero(v: string | undefined | null): boolean {
+  if (!v) return false;
+  const n = Number(v);
+  return Number.isFinite(n) && Math.abs(n) > 0.005;
+}
+
 function documentsURL(fromDate: string, toDate: string, q = "") {
   const params = new URLSearchParams({ from: fromDate, to: toDate, page: "1", pageSize: "100" });
   if (q.trim()) params.set("q", q.trim());
@@ -1481,6 +1694,331 @@ function getInitialReviewDocNo(items: BulkDocumentChangeItem[]) {
   return queue.find((item) => item.preview)?.docNo
     || queue[0]?.docNo
     || "";
+}
+
+// ----- Phase C helpers / components -----
+
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+function parseFloat2(s: string): number {
+  const n = parseFloat(s);
+  return Number.isFinite(n) ? n : 0;
+}
+
+// Mirror of backend computeTotalsFromLines: vat_type 0=no vat, 1=incl 7%, 2=excl 7%, else stored.
+function recomputeClientTotals(
+  remaining: DocumentDetailLine[],
+  removed: Set<string>,
+  added: NewLineInput[],
+  vatType: number,
+): { totalValue: string; totalVatValue: string; totalAmount: string } {
+  let sumAmount = 0;
+  let storedVat = 0;
+  let storedExcl = 0;
+  for (const line of remaining) {
+    if (removed.has(line.itemCode)) continue;
+    sumAmount += parseFloat2(line.sumAmount);
+    storedVat += parseFloat2(line.totalVatValue);
+    // line doesn't carry sum_amount_exclude_vat in client; fall back to sumAmount when vat_type=3
+    storedExcl += parseFloat2(line.sumAmount);
+  }
+  for (const a of added) {
+    const qty = parseFloat2(a.qty);
+    const price = parseFloat2(a.price);
+    const disc = parseFloat2(a.discount);
+    const lineAmount = round2(qty * price - disc);
+    sumAmount += lineAmount;
+    storedExcl += lineAmount;
+  }
+  let totalValue = 0;
+  let totalVat = 0;
+  let totalAmount = 0;
+  switch (vatType) {
+    case 0:
+      totalValue = sumAmount;
+      totalVat = 0;
+      totalAmount = sumAmount;
+      break;
+    case 1:
+      totalValue = round2((sumAmount * 100) / 107);
+      totalVat = round2(sumAmount - totalValue);
+      totalAmount = sumAmount;
+      break;
+    case 2:
+      totalValue = sumAmount;
+      totalVat = round2((sumAmount * 7) / 100);
+      totalAmount = round2(sumAmount + totalVat);
+      break;
+    default:
+      totalValue = storedExcl;
+      totalVat = storedVat;
+      totalAmount = round2(storedExcl + storedVat);
+      break;
+  }
+  return {
+    totalValue: totalValue.toFixed(2),
+    totalVatValue: totalVat.toFixed(2),
+    totalAmount: totalAmount.toFixed(2),
+  };
+}
+
+function EditableDocumentLinesPanel({
+  docNo,
+  lines,
+  removed,
+  added,
+  onToggleRemove,
+  onRemoveAdded,
+  onAdd,
+}: {
+  docNo: string;
+  lines: DocumentDetailLine[];
+  removed?: Set<string>;
+  added: NewLineInput[];
+  onToggleRemove: (itemCode: string) => void;
+  onRemoveAdded: (index: number) => void;
+  onAdd: (line: NewLineInput) => void;
+}) {
+  const removedSet = removed ?? new Set<string>();
+  const totalRows = lines.length + added.length;
+  // ซ่อนฟีเจอร์“เพิ่มสินค้า”ตามคำขอผู้ใช้: พรีวิวให้ใช้การลบ/ติดลบเท่านั้น.
+  void onAdd;
+  void onRemoveAdded;
+  return (
+    <Paper variant="outlined" sx={{ p: 1.25 }}>
+      <Stack spacing={1}>
+        <Stack direction="row" spacing={1} sx={{ alignItems: "center", justifyContent: "space-between" }}>
+          <EmphasisText>รายการสินค้าในบิล {docNo}</EmphasisText>
+          <Stack direction="row" spacing={0.75} sx={{ alignItems: "center" }}>
+            <Chip label={`${totalRows - removedSet.size} รายการ`} size="small" />
+            {removedSet.size ? <Chip color="warning" label={`ลบ ${removedSet.size}`} size="small" /> : null}
+            {added.length ? <Chip color="success" label={`เพิ่ม ${added.length}`} size="small" /> : null}
+          </Stack>
+        </Stack>
+        <TableContainer>
+          <Table size="small">
+            <TableHead>
+              <TableRow>
+                <TableCell sx={{ width: 36 }}></TableCell>
+                <TableCell>รหัสสินค้า</TableCell>
+                <TableCell>ชื่อสินค้า</TableCell>
+                <TableCell align="right">จำนวน</TableCell>
+                <TableCell>หน่วย</TableCell>
+                <TableCell align="right">ราคา</TableCell>
+                <TableCell align="right">ส่วนลด</TableCell>
+                <TableCell align="right">รวม</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {lines.map((line) => {
+                const isRemoved = removedSet.has(line.itemCode);
+                return (
+                  <TableRow key={`l-${line.lineNumber}-${line.itemCode}`} sx={isRemoved ? { textDecoration: "line-through", opacity: 0.55, bgcolor: "action.hover" } : undefined}>
+                    <TableCell>
+                      {isRemoved ? (
+                        <Tooltip title="ย้อนกลับ">
+                          <IconButton aria-label="ย้อนกลับ" onClick={() => onToggleRemove(line.itemCode)} size="small">
+                            <RotateCcw size={14} />
+                          </IconButton>
+                        </Tooltip>
+                      ) : (
+                        <Tooltip title="ลบรายการนี้">
+                          <IconButton aria-label="ลบรายการ" color="error" onClick={() => onToggleRemove(line.itemCode)} size="small">
+                            <Trash2 size={14} />
+                          </IconButton>
+                        </Tooltip>
+                      )}
+                    </TableCell>
+                    <TableCell><DocCode value={line.itemCode} /></TableCell>
+                    <TableCell>{line.itemName}</TableCell>
+                    <TableCell align="right">{line.qty}</TableCell>
+                    <TableCell>{line.unitCode}</TableCell>
+                    <TableCell align="right">{formatMoney(line.price)}</TableCell>
+                    <TableCell align="right">{formatMoney(line.discount)}</TableCell>
+                    <TableCell align="right"><Money value={formatMoney(line.sumAmount)} /></TableCell>
+                  </TableRow>
+                );
+              })}
+              {added.map((a, idx) => {
+                const qty = parseFloat2(a.qty);
+                const price = parseFloat2(a.price);
+                const disc = parseFloat2(a.discount);
+                const lineAmount = round2(qty * price - disc);
+                return (
+                  <TableRow key={`a-${idx}-${a.itemCode}`} sx={{ bgcolor: "success.50" }}>
+                    <TableCell>
+                      <Tooltip title="ยกเลิกการเพิ่ม">
+                        <IconButton aria-label="ลบรายการที่เพิ่ม" color="error" onClick={() => onRemoveAdded(idx)} size="small">
+                          <Trash2 size={14} />
+                        </IconButton>
+                      </Tooltip>
+                    </TableCell>
+                    <TableCell>
+                      <Stack direction="row" spacing={0.5} sx={{ alignItems: "center" }}>
+                        <DocCode value={a.itemCode} />
+                        <Chip color="success" label="ใหม่" size="small" />
+                      </Stack>
+                    </TableCell>
+                    <TableCell>{a.itemName}</TableCell>
+                    <TableCell align="right">{a.qty}</TableCell>
+                    <TableCell>{a.unitCode}</TableCell>
+                    <TableCell align="right">{formatMoney(a.price)}</TableCell>
+                    <TableCell align="right">{formatMoney(a.discount)}</TableCell>
+                    <TableCell align="right"><Money value={formatMoney(lineAmount.toFixed(2))} /></TableCell>
+                  </TableRow>
+                );
+              })}
+              {totalRows === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={8}>
+                    <Typography color="text.secondary" sx={{ textAlign: "center", py: 2 }} variant="body2">
+                      บิลนี้ไม่มีรายการสินค้าเหลือ ต้องยกเลิกการลบอย่างน้อย 1 รายการก่อนส่งเข้า SML
+                    </Typography>
+                  </TableCell>
+                </TableRow>
+              ) : null}
+            </TableBody>
+          </Table>
+        </TableContainer>
+      </Stack>
+    </Paper>
+  );
+}
+
+function AddItemDialog({
+  onClose,
+  onAdd,
+}: {
+  onClose: () => void;
+  onAdd: (line: NewLineInput) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [options, setOptions] = useState<ProductOption[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [product, setProduct] = useState<ProductOption | null>(null);
+  const [qty, setQty] = useState("1");
+  const [price, setPrice] = useState("");
+  const [discount, setDiscount] = useState("0");
+  const [unitCode, setUnitCode] = useState("");
+  const [units, setUnits] = useState<ProductUnit[]>([]);
+  const [unitsLoading, setUnitsLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    const q = query.trim();
+    if (q.length < 1) { setOptions([]); return; }
+    let cancelled = false;
+    setLoading(true);
+    (async () => {
+      const resp = await apiGet<{ items: ProductOption[] }>(`/api/v1/master/products?q=${encodeURIComponent(q)}&limit=20`);
+      if (cancelled) return;
+      setOptions(resp.success && resp.data ? resp.data.items : []);
+      setLoading(false);
+    })();
+    return () => { cancelled = true; };
+  }, [query]);
+
+  useEffect(() => {
+    if (!product) { setUnits([]); return; }
+    let cancelled = false;
+    setUnitsLoading(true);
+    (async () => {
+      const resp = await apiGet<{ items: ProductUnit[] }>(`/api/v1/master/product-units?code=${encodeURIComponent(product.code)}`);
+      if (cancelled) return;
+      const items = resp.success && resp.data ? resp.data.items : [];
+      setUnits(items);
+      setUnitsLoading(false);
+      // Auto-pick: prefer product's standard unit if it's in the list, otherwise the first row, otherwise the product's standard unit as fallback.
+      const fallback = product.unitCode || "";
+      const hasFallback = items.some((u) => u.code === fallback);
+      if (hasFallback) {
+        setUnitCode(fallback);
+      } else if (items.length > 0) {
+        setUnitCode(items[0].code);
+      } else {
+        setUnitCode(fallback);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [product]);
+
+  function handleAdd() {
+    if (!product) { setError("เลือกสินค้าก่อน"); return; }
+    const q = parseFloat(qty);
+    if (!Number.isFinite(q) || q <= 0) { setError("จำนวนต้องมากกว่า 0"); return; }
+    const p = parseFloat(price);
+    if (!Number.isFinite(p) || p < 0) { setError("ราคาต้องเป็นตัวเลข ≥ 0"); return; }
+    const d = parseFloat(discount || "0");
+    if (!Number.isFinite(d) || d < 0) { setError("ส่วนลดต้องเป็นตัวเลข ≥ 0"); return; }
+    onAdd({
+      itemCode: product.code,
+      itemName: product.name,
+      unitCode: unitCode || product.unitCode || "",
+      qty: q.toString(),
+      price: p.toString(),
+      discount: d.toString(),
+      whCode: "",
+      shelfCode: "",
+    });
+  }
+
+  return (
+    <Dialog fullWidth maxWidth="sm" open onClose={onClose}>
+      <DialogTitle>เพิ่มสินค้าเข้าบิล</DialogTitle>
+      <DialogContent dividers>
+        <Stack spacing={1.5} sx={{ pt: 0.5 }}>
+          <Autocomplete
+            filterOptions={(x) => x}
+            getOptionLabel={(opt) => `${opt.code} — ${opt.name}`}
+            isOptionEqualToValue={(a, b) => a.code === b.code}
+            loading={loading}
+            noOptionsText={query.trim() ? "ไม่พบสินค้า" : "พิมพ์เพื่อค้นหา"}
+            onChange={(_, v) => { setProduct(v); }}
+            onInputChange={(_, v) => setQuery(v)}
+            options={options}
+            renderInput={(params) => (
+              <TextField
+                {...params}
+                autoFocus
+                label="ค้นหารหัส/ชื่อสินค้า"
+                size="small"
+              />
+            )}
+            value={product}
+          />
+          <Box sx={{ display: "grid", gap: 1, gridTemplateColumns: { xs: "1fr 1fr", sm: "1fr 1fr 1fr 1fr" } }}>
+            <TextField label="จำนวน" onChange={(e) => setQty(e.target.value)} size="small" type="number" value={qty} />
+            <TextField
+              disabled={!product || unitsLoading}
+              helperText={product && !unitsLoading && units.length === 0 ? "ไม่มีหน่วยใน ic_unit_use" : " "}
+              label="หน่วย"
+              onChange={(e) => setUnitCode(e.target.value)}
+              select={units.length > 0}
+              size="small"
+              value={unitCode}
+            >
+              {units.length > 0
+                ? units.map((u) => (
+                    <MenuItem key={u.code} value={u.code}>
+                      {u.code}{u.name && u.name !== u.code ? ` — ${u.name}` : ""}
+                    </MenuItem>
+                  ))
+                : null}
+            </TextField>
+            <TextField label="ราคา" onChange={(e) => setPrice(e.target.value)} size="small" type="number" value={price} />
+            <TextField label="ส่วนลด" onChange={(e) => setDiscount(e.target.value)} size="small" type="number" value={discount} />
+          </Box>
+          {error ? <Alert severity="error">{error}</Alert> : null}
+        </Stack>
+      </DialogContent>
+      <DialogActions>
+        <AppButton onClick={onClose}>ยกเลิก</AppButton>
+        <AppButton onClick={handleAdd} tone="primary">เพิ่ม</AppButton>
+      </DialogActions>
+    </Dialog>
+  );
 }
 
 export default BulkInvoiceEditPage;

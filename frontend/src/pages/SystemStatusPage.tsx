@@ -5,8 +5,10 @@ import {
   Box,
   Chip,
   CircularProgress,
+  IconButton,
   Paper,
   Stack,
+  Tooltip,
   Typography,
 } from "@mui/material";
 import { CheckCircle2, ChevronLeft, ClipboardCheck, Database, RefreshCw, ShieldCheck } from "lucide-react";
@@ -47,9 +49,15 @@ export default function SystemStatusPage({ status, onRefresh }: { status: Databa
         title="ตั้งค่าและตรวจระบบ"
         description="ตรวจฐาน SML และติดตั้งตารางของ next-salesinvoice เมื่อย้ายไปฐานใหม่"
         actions={
-          <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
-            <AppButton onClick={() => navigate("/bulk-edit")} startIcon={<ChevronLeft size={16} />}>กลับไปแก้ไขบิล</AppButton>
-            <AppButton disabled={installing} onClick={() => void onRefresh()} startIcon={<RefreshCw size={16} />}>ตรวจสอบใหม่</AppButton>
+          <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+            <AppButton onClick={() => navigate("/bulk-edit")} startIcon={<ChevronLeft size={16} />} tone="primary">กลับไปแก้ไขบิล</AppButton>
+            <Tooltip arrow title="ตรวจสถานะระบบใหม่">
+              <span>
+                <IconButton aria-label="ตรวจสอบใหม่" disabled={installing} onClick={() => void onRefresh()} size="medium" sx={{ border: 1, borderColor: "divider", borderRadius: 1, height: 40, width: 40 }}>
+                  <RefreshCw size={16} />
+                </IconButton>
+              </span>
+            </Tooltip>
           </Stack>
         }
       />

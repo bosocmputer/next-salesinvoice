@@ -6,11 +6,11 @@
 
 ## สถานะล่าสุด
 
-อัปเดตล่าสุด: 2026-05-17 Asia/Bangkok
+อัปเดตล่าสุด: 2026-05-19 Asia/Bangkok
 
 - Backend: Go + Gin + pgx/PostgreSQL
 - Frontend: React + Vite + Material UI v9 + `@uiw/react-json-view`
-- UI หลักอยู่ที่ `/bulk-edit`, `/audit`, `/system/status`
+- UI หลักอยู่ที่ `/bulk-edit`, `/audit`, `/system/status` (UX redesign 2026-05-18: page header strip + sticky action bar + icon-only reload + Enter-to-search + focused preview panel; 2026-05-19: items-to-remove picker scoped to selected docs + per-bill row edit — trash/restore + add line + unit dropdown ใน preview dialog)
 - Typography primitives (`SectionTitle`, `DocCode`, `Money`, ...) รวมอยู่ที่ `frontend/src/components/ui/typography.tsx`
 - Mobile responsive: 44px tap target, dialogs fullScreen บน xs, DataGrid ถูกแทนด้วย card view บน xs
 - Accessibility: skip-link, focus ring, `prefers-reduced-motion`, axe-core smoke 0 violations
@@ -37,7 +37,8 @@
 - แสดงรายการบิลขายจาก `ic_trans` ที่ `trans_flag = 44`
 - ค้นหาเลขบิล, ลูกหนี้, หมายเหตุ และค้นหาเลขบิลแบบ list/range
 - เลือกบิลจากตารางใน `/bulk-edit`
-- ตั้งค่าลูกหนี้ใหม่, ชุดเอกสารใหม่, ประเภทขาย, ประเภทภาษี, หมายเหตุ และสินค้าที่ต้องลบ
+- ตั้งค่าลูกหนี้ใหม่, ชุดเอกสารใหม่, ประเภทขาย, ประเภทภาษี, หมายเหตุต่อบิล (settings dialog)
+- ลบ/เพิ่มรายการสินค้าแบบต่อบิลใน preview dialog (trash/restore + add line + unit dropdown จาก `ic_unit_use`)
 - Preview การเปลี่ยนแปลงก่อนส่งเข้า SML
 - Confirm อีกชั้นก่อน real write
 - บันทึก snapshot/audit และ rollback ได้โดย Admin
@@ -194,6 +195,7 @@ Documents:
 
 - `GET /api/v1/documents?from=&to=&page=&pageSize=&q=`
 - `GET /api/v1/documents/:docNo/details`
+- `POST /api/v1/documents/items` — รับ `{docNos:[...]}` คืนรายการสินค้า (unique item_code) ที่อยู่ในบิลที่ระบุ
 - `POST /api/v1/documents/bulk/preview-change`
 - `POST /api/v1/documents/bulk/apply-change`
 - `POST /api/v1/documents/rollback`
@@ -204,6 +206,7 @@ Master data:
 - `GET /api/v1/master/doc-formats`
 - `GET /api/v1/master/customers?q=&limit=`
 - `GET /api/v1/master/products?q=&limit=`
+- `GET /api/v1/master/product-units?code=<icCode>` — หน่วยของสินค้าจาก `ic_unit_use`
 - `GET /api/v1/master/sale-types`
 - `GET /api/v1/master/tax-types`
 

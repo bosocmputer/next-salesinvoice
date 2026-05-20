@@ -1,6 +1,38 @@
 # next-salesinvoice Session Handoff
 
-Last updated: 2026-05-18 Asia/Bangkok (external SML DB + doc-number `@` format + tax_doc_no sync + real total count + VAT recompute on vat_type/delete)
+Last updated: 2026-05-20 Asia/Bangkok (Phase 8: cb_trans / cb_trans_detail auto-sync + drop sale-type from edit dialog + hide add-item from preview)
+
+ไฟล์นี้คือ checkpoint ล่าสุดสำหรับเปิด chat ใหม่หรือส่งต่อให้ AI ตัวอื่นทำงานต่อ อ่านคู่กับ `README.md` ก่อนแก้โค้ดเสมอ
+
+## Phase 8 Summary (2026-05-20)
+
+UI:
+- ตัด "ประเภทการขาย" ออกจาก dialog ตั้งค่าการแก้ไข — บังคับใช้ค่า inquiry_type เดิมของแต่ละบิล (frontend ส่ง `inquiryType=0` sentinel เสมอ; backend `ApplyBulkChange` ใช้ค่าจาก `Preview.After` ที่ resolve sentinel แล้ว)
+- ซ่อนปุ่ม "เพิ่มสินค้า" + `<AddItemDialog>` ใน preview dialog (props ยังคงอยู่เพื่อความเข้ากันได้)
+- เพิ่ม `<Alert severity="info">` แจ้งว่า cb_trans / cb_trans_detail จะถูกปรับให้ตรงกับยอดใหม่อัตโนมัติ
+
+Backend:
+- ใหม่: `backend/internal/repository/cb_trans_sync.go`
+  - `syncCbTransToTotal(ctx, tx, oldDocNo, newDocNo, newTotal)` — lock cb_trans header (FOR UPDATE), scale 10 payment-instrument columns ตามสัดส่วน, รวม residual กลับเข้า `cash_amount`, reconcile `pay_cash_amount` + `money_change`, scale cb_trans_detail.amount/sum_amount ตาม ratio เดียวกัน, invariant check (sum/total/net/pay ≈ newTotal ภายใน 0.01) — ถ้า violate → return error → tx rollback
+  - `scaleCbTransFields([10]float, oldPay, newTotal) ([10]float, ratio)` — pure helper สำหรับ unit test
+  - `restoreCbTransFromSnapshot(ctx, tx, currentDocNo, originalDocNo, payload)` — รองรับ RollbackDocument
+- แก้ `backend/internal/repository/document_repository.go`
+  - ApplyChange เรียก `syncCbTransToTotal` หลัง update ic_trans header (parse `totals.TotalAmount` → float64 ก่อน)
+  - `documentSnapshotPayload` เพิ่ม `CbTransRaw`, `CbTransDetailsRaw` (json.RawMessage)
+  - `createDocumentSnapshot` snapshot cb_trans + cb_trans_detail เป็น jsonb ดิบ (coalesce-to-`'null'`/`'[]'`)
+  - `RollbackDocument` เรียก `restoreCbTransFromSnapshot` — wipe + jsonb_populate_record(set) ถ้า snapshot ใหม่; no-op สำหรับ snapshot เก่า (backward compatible)
+- ใหม่: `backend/internal/config/config.go` field `CbTransSyncEnabled` (env `NSI_CB_TRANS_SYNC`, default `true`) — สำหรับ emergency disable โดยไม่ต้อง redeploy
+- Tests: `backend/internal/repository/cb_trans_sync_test.go` (TestScaleCbTransFields_* + TestRound2 + TestIsJSONNull) — `go test ./... -short` ผ่านทั้งหมด
+
+Behaviour rules:
+- บิลที่ไม่มี row ใน cb_trans (เครดิต/AR) → skip ทั้งหมด ไม่ block
+- oldTotal == 0, newTotal > 0 → cash_amount รับเต็ม, instrument อื่น = 0, ratio=0
+- ratio=0 + cb_trans_detail → zero amount/sum_amount + rename doc_no
+- ratio!=1 → scale ทุก field × ratio, residual ทบใน cash_amount
+- ratio==1 + oldDocNo!=newDocNo → rename อย่างเดียว
+- Invariant fail → bubble error ขึ้นไป (caller rollback tx ทั้งก้อน — ic_trans + cb_trans กลับสู่สถานะเดิมพร้อมกัน)
+
+Env: เพิ่ม `NSI_CB_TRANS_SYNC=true` ใน `backend/.env.example`
 
 ไฟล์นี้คือ checkpoint ล่าสุดสำหรับเปิด chat ใหม่หรือส่งต่อให้ AI ตัวอื่นทำงานต่อ อ่านคู่กับ `README.md` ก่อนแก้โค้ดเสมอ
 
@@ -20,7 +52,7 @@ Last updated: 2026-05-18 Asia/Bangkok (external SML DB + doc-number `@` format +
 - Frontend URL (local dev): `http://127.0.0.1:3000/`
 - Backend URL (local dev): `http://127.0.0.1:8080/`
 - Customer-facing deploy: docker compose on `192.168.2.109` exposing port 3040 (frontend) + 8085 (backend) via cloudflared quick tunnel
-- Latest tunnel URL (respawns each `./deploy.sh`): `https://remembered-peninsula-princess-accept.trycloudflare.com`
+- Latest tunnel URL (respawns each `./deploy.sh`): `https://formal-chicken-domestic-democracy.trycloudflare.com`
 - Admin login on demo DB: code `001` / password `001` (erp_user.title=`admin` → maps to Admin role)
 
 ## Stack
@@ -99,36 +131,67 @@ Commit หลักรอบ UX/A11y ล่าสุด: typography primitives �
 - แสดง DB status badge (ฐานข้อมูลพร้อมใช้งาน / ฐานข้อมูลยังไม่พร้อม)
 - ไม่มีปุ่ม "ตั้งค่าฐานข้อมูล" แล้ว — config บังคับผ่าน `.env` เท่านั้น
 
-`/bulk-edit`:
+`/bulk-edit` (UX redesign Phase 1-3, 2026-05-18):
 
-- Compact MUI/DataGrid workbench
-- Header redesigned as context bar with DB status chip
-- Search supports text, list, and range syntax such as `INV26050025:INV26050030,INV26050040`
-- Search input has clear text action
-- Reload keeps current filters/search and refreshes data
-- Bulk select-by-result button was removed from UI
-- Selection action bar appears only after selecting rows
-- Settings dialog uses compact one-row header and MUI controls
-- Preview loading dialog appears while backend builds preview
-- Preview dialog no longer requires user to mark each bill as read/checked
-- User can choose documents in queue, inspect change summary, then send writable bills into SML
-- Confirm dialog still appears before real write
+- Page header strip: title `แก้ไขบิลครั้งละหลายใบ` + 1-line description + bold counter `พบ N บิล` ขวาบน
+- Date defaults narrowed to **current month → today** (was ±15 days)
+- Filter row compact: `[จากวันที่] [ถึงวันที่] [ค้นหา + ? Tooltip + X clear] [↻ IconButton]` — no "ค้นหา" text button, Enter triggers search
+- Search hint moved from caption text to HelpCircle Tooltip (always visible, hover for syntax help)
+- Supports list/range syntax: `INV26050025:INV26050030,INV26050040`
+- DataGrid: removed "ดูรายละเอียด" column → slim 48px chevron-icon column at far right (click opens detail dialog)
+- Empty "—" in `หมายเหตุ` column rendered with `text.disabled` (muted)
+- Row click selects checkbox + highlights row (inset 3px primary border) + opens sticky bottom action bar
+- Sticky action bar (`SelectionActionBar`) renders fixed bottom (`left: { xs: 0, md: 260px }` to clear sidebar), `zIndex: appBar`
+- `pageSizeOptions={[25, 50, 100]}`, `hideFooterSelectedRowCount`, `hideFooterPagination={total <= 100}` to remove footer noise when all bills fit on one page
+- **Preview dialog focus panel** (`PreviewChangeSummaryPanel`, 2026-05-18 Phase 5):
+  - Title "จุดเปลี่ยนที่ต้องโฟกัส" + `N จุดเปลี่ยน` warning Chip + optional `ลบสินค้า N รายการ` error Chip
+  - **Only changed cards** shown in grid (filter out unchanged so panel matches its name)
+  - Unchanged fields collapsed to caption `คงเดิม: ลูกค้า, ชุดเอกสาร, ...` below grid
+  - If `changedCount === 0`: shows text "ไม่มีการเปลี่ยนแปลงระดับเอกสาร (มีเฉพาะการลบรายการสินค้า N รายการ)"
+  - Removed redundant helper sentence "ช่องที่มีพื้นหลังสีอ่อนคือ..." (visual cues already self-explanatory)
+- Settings dialog still uses compact one-row header, MUI controls
+- Confirm dialog still required before real write
 
-`/audit`:
+- **Items-to-remove picker** (Phase 6, 2026-05-19):
+  - เปลี่ยนจาก Autocomplete typeahead (ค้นจาก `ic_inventory` ทั้งระบบ) → `TextField select multiple` พื้นฐาน แสดงเฉพาะสินค้าที่มีในบิลที่ user เลือกไว้ (dedup’d จาก `ic_trans_detail`)
+  - Endpoint ใหม่: `POST /api/v1/documents/items` body `{ docNos: [...] }` คืน `{ items: [{code, name, unitCode, docCount}] }` (limit 500 docs/call)
+  - Empty state: disable + helper "เลือกบิลก่อน จึงจะเห็นรายการสินค้า"
+  - Auto-prune: ถ้า user เปลี่ยนบิลที่เลือกหลังเลือกสินค้าไปแล้ว → `removeItemCodes` จะถูก prune อัตโนมัติ + toast แจ้ง
+  - Backend `/api/v1/master/products` (typeahead จาก `ic_inventory`) ยังคงไว้เผื่อ future use — หน้า bulk-edit ไม่เรียกแล้ว
 
-- Compact DataGrid-style history view
-- Search follows the same document list/range behavior as `/bulk-edit`
-- Old/new invoice detail dialogs use one-row header
-- Changed fields are highlighted
-- Technical dialog uses JSON view and highlights changed JSON paths
+- **Per-bill row editing in preview dialog** (Phase 7, 2026-05-19):
+  - ลบ global "สินค้าที่ต้องการลบในบิล" ออกจาก Settings dialog แล้ว (legacy `removeItemCodes` ยังคงรองรับใน API เพื่อ backward compat)
+  - Preview dialog: แต่ละบิลแสดงตารางรายการสินค้าแบบ inline (`EditableDocumentLinesPanel`) พร้อม:
+    - ปุ่ม trash/restore ต่อบรรทัด (toggle ลบ/กู้คืน) — แถวที่ถูกลบจะเป็น strikethrough
+    - ปุ่ม "เพิ่มสินค้า" → เปิด `AddItemDialog` (product typeahead + qty + price + discount + unit)
+    - ยอดรวมในตารางคำนวณใหม่แบบ live (client-side) ตาม `vat_type` ของบิล
+    - ถ้าบิลใดถูกลบจนหมดบรรทัด → block apply (button disabled) + แสดง error
+  - State store: `Map<docNo, PerDocEdits>` ที่ระดับ page (`perDocEdits`) — แต่ละ entry เก็บ `removedRoworders: Set<number>` + `addedLines: NewLineInput[]`
+  - Backend payload: `bulk/preview-change` + `bulk/apply-change` รับ `perDocEdits: { [docNo]: { removeItemCodes:[], addedLines:[] } }` (เพิ่มเติมจาก legacy global fields)
 
-`/system/status`:
+- **Unit dropdown in AddItemDialog** (Phase 7, 2026-05-19):
+  - เมื่อเลือกสินค้า → fetch `GET /api/v1/master/product-units?code=<icCode>` → ดึงหน่วยจาก `ic_unit_use` left join `ic_unit` (ordered by `line_number`)
+  - Auto-select `product.unitCode` ถ้ามีอยู่ในรายการ มิฉะนั้นเลือกแถวแรก (fallback to product.unitCode literal)
+  - ถ้าสินค้านั้นไม่มี row ใน `ic_unit_use` → field กลายเป็น plain TextField + helper "ไม่มีหน่วยใน ic_unit_use"
 
-- Admin-only diagnostic/setup page
-- `GET /api/v1/system/database-status` is read-only
-- If `nsi_*` tables are missing and SML tables are ready, Admin sees `ติดตั้งตารางระบบ`
-- If required SML tables are missing, install button is disabled and missing tables are shown
-- Current `sml1_2026` status: connected, SML ready, app schema ready
+- **Clone-template insert strategy for new detail lines** (Phase 7, 2026-05-19):
+  - `insertAddedDetailLines` (`document_repository.go` ~line 2227) **ไม่** ระบุคอลัมน์ของ `ic_trans_detail` แบบ hardcoded แล้ว (~125 คอลัมน์ — เสี่ยงตกหล่น NOT NULL/business fields)
+  - กลยุทธ์: หา `roworder` ของบรรทัดแรกในบิลเดียวกัน → ใช้ `information_schema.columns` ดึงรายชื่อคอลัมน์ทั้งหมด (ยกเว้น `roworder`) → ทำ `INSERT INTO ic_trans_detail (cols) SELECT cols FROM ic_trans_detail WHERE roworder=$template RETURNING roworder` → จากนั้น `UPDATE` เฉพาะฟิลด์ที่ต่างของบรรทัดใหม่ (`line_number`, `item_code`, `item_name`, `unit_code`, `qty`, `price`, `discount`, `discount_amount`, `sum_amount`, `sum_amount_exclude_vat`, `total_vat_value=0`, `wh_code`, `shelf_code`, `vat_type`, `tax_type`, `cust_code`, `inquiry_type`, costs/refs=0/blank, `create_date_time_now=now()`)
+  - กรณีที่ INSERT แบบเดิมตก (เช่น `doc_date` NOT NULL ไม่มี default, `calc_flag=-1` SML ใช้คำนวณยอดรวม) → แก้แบบ schema-agnostic ทนต่อการเพิ่มคอลัมน์ใหม่ของ SML
+  - ฟิลด์ vat/cust_code/inquiry_type/doc_no จะถูก overwrite อีกครั้งโดย UPDATE ที่ตามมาใน `ApplyChange` (~line 519) สำหรับทุก row ของบิล (รวม row ใหม่)
+
+`/audit` (UX redesign Phase 4-A, 2026-05-18):
+
+- Same header strip pattern as `/bulk-edit`: title + description + `พบ N รายการ` counter ขวาบน
+- Removed inner "ประวัติการบันทึก" SectionTitle + inline StatusBadge (relocated to page header)
+- Search: Enter triggers `loadLogs()`, `helperText` removed, HelpCircle Tooltip in endAdornment
+- Removed text buttons ("ค้นหา" + "โหลดใหม่") → single IconButton ↻ with Tooltip "โหลดข้อมูลใหม่"
+- Row 4 action buttons (`บิลเดิม / บิลใหม่ / เทคนิค / ย้อนกลับ`) kept as-is (not converted to dropdown yet)
+
+`/system/status` (UX redesign Phase 4-B, 2026-05-18):
+
+- `PageHeader.actions`: primary "กลับไปแก้ไขบิล" (tone="primary") + IconButton ↻ "ตรวจสอบใหม่" (was both buttons primary tone)
+- Layout unchanged otherwise; install/migrate flow still works
 
 ## Latest Backend Behavior
 
@@ -140,6 +203,8 @@ Commit หลักรอบ UX/A11y ล่าสุด: typography primitives �
 - Document search parser supports exact list/range syntax and falls back to fuzzy search for normal text
 - Audit document search uses the same parser behavior
 - **Doc number generator** (`previewNextDocNo` in `document_repository.go` ~line 2008) now supports SML formats with `@` marker (e.g. `@-YYMM####`). Substitution order: `@YYYYMM`, `@YYMM`, `@YYYY`, `@YY`, `@MM`, then bare `YYYYMM`/`YYMM`/`YYYY`/`YY`/`MM`, then `@` → `formatCode`. Tests in `document_repository_test.go`.
+- **Per-doc edits endpoint payload** (`/bulk/preview-change`, `/bulk/apply-change`): นอกจาก legacy global `removeItemCodes` ยังรับ `perDocEdits: map[docNo]{ removeItemCodes, addedLines }` สำหรับลบ/เพิ่มรายการแบบต่อบิล (Phase 7).
+- **`GET /api/v1/master/product-units?code=<icCode>`** (Phase 7): คืนรายการหน่วยของสินค้านั้นจาก `ic_unit_use` left join `ic_unit` (order by `line_number`).
 - **`tax_doc_no` is synced to `doc_no`** on both apply (line ~519) and rollback (line ~933) paths.
 - **`Documents.List` returns total count** via separate `select count(*)` query (signature: `([]model.DocumentSummary, bool, int, error)`). Frontend `BulkInvoiceEditPage.tsx` displays `แสดง ${items.length} / ${total} บิล`.
 - **VAT totals recomputation on vat_type change / item deletion**:
@@ -205,3 +270,9 @@ Passed in this session:
 - Full E2E seed/apply/rollback regression suite
 - VAT rate is hardcoded 7% in `calculateTotals` / detail UPDATE; if customer ever needs different rate (e.g. 0% export, future rate changes), source it from `ic_trans.vat_rate` (header has the column) via subquery or pass as param
 - Add unit/integration test for VAT recomputation (type 0/1/2 + deletion combinations) — existing tests cover doc-number generation only
+- **Pre-PROD checklist (UX redesign deployed, awaiting user QA round):**
+  - End-to-end manual: mix vat_type 0/1/2 bills, delete items, apply, audit + rollback verify
+  - Cloudflare quick tunnel → migrate to named tunnel + custom domain for stable URL
+  - PostgreSQL backup policy on `192.168.2.109`
+  - Mobile responsive review at ≤ 600px on the 3 redesigned pages
+  - Optional: convert `/audit` row 4 buttons into dropdown/kebab to compress that column

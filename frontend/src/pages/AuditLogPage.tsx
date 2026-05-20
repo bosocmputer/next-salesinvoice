@@ -22,13 +22,14 @@ import {
   Tab,
   Tabs,
   TextField,
+  Tooltip,
   Typography,
   useMediaQuery,
 } from "@mui/material";
 import type { GridColDef } from "@mui/x-data-grid";
 import JsonView, { type JsonViewProps, type SemicolonProps } from "@uiw/react-json-view";
 import { lightTheme as jsonViewLightTheme } from "@uiw/react-json-view/light";
-import { Copy, RefreshCw, Search, X } from "lucide-react";
+import { Copy, HelpCircle, RefreshCw, Search, X } from "lucide-react";
 
 import { useToast } from "../contexts/toast";
 import { apiGet, apiPost } from "../lib/api";
@@ -197,44 +198,61 @@ export default function AuditLogPage({ selectedDocNo, user }: { selectedDocNo: s
   return (
     <Stack spacing={1.25}>
       {message ? <Alert severity={message.includes("สำเร็จ") ? "success" : "warning"}>{message}</Alert> : null}
+      <Box sx={{ alignItems: { sm: "flex-end" }, display: "flex", flexDirection: { xs: "column", sm: "row" }, gap: 1, justifyContent: "space-between" }}>
+        <Box>
+          <SectionTitle level="h2">ประวัติและย้อนกลับ</SectionTitle>
+          <Typography color="text.secondary" variant="body2">
+            ตรวจประวัติการแก้ไขบิล หรือย้อนกลับเลขบิลให้เป็นค่าเดิมจากจุดสำรองข้อมูล
+          </Typography>
+        </Box>
+        <Typography color={loading ? "text.secondary" : "text.primary"} sx={{ fontWeight: 600, whiteSpace: "nowrap" }} variant="subtitle2">
+          {loading ? "กำลังโหลด…" : `พบ ${histories.length.toLocaleString("th-TH")} รายการ`}
+        </Typography>
+      </Box>
       <Paper variant="outlined" sx={{ minWidth: 0, overflow: "hidden", p: 1.25 }}>
         <Stack spacing={1.5}>
-          <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ alignItems: { sm: "center" }, justifyContent: "space-between" }}>
-            <SectionTitle level="h2">ประวัติการบันทึก</SectionTitle>
-            <Box sx={{ alignSelf: { xs: "flex-start", sm: "center" } }}>
-              <StatusBadge>{loading ? "กำลังโหลด" : `${histories.length} รายการ`}</StatusBadge>
-            </Box>
-          </Stack>
         <Box sx={{ alignItems: "flex-start", display: "grid", gap: 1, gridTemplateColumns: { xs: "1fr", md: "minmax(260px, 1fr) auto" }, minWidth: 0 }}>
           <TextField
-            helperText="ค้นหาเลขบิลหลายใบหรือช่วงได้ เช่น เลขเริ่ม:เลขจบ,เลขเดี่ยว"
             label="เลขเอกสารเดิมหรือเลขเอกสารใหม่"
             onChange={(event) => setDocNo(event.target.value)}
-            placeholder="เลขบิลเดิม / เลขบิลใหม่"
+            onKeyDown={(event) => { if (event.key === "Enter") void loadLogs(); }}
+            placeholder="เลขบิลเดิม / เลขบิลใหม่  (กด Enter เพื่อค้นหา)"
             size="small"
             value={docNo}
             slotProps={{
               input: {
-                endAdornment: docNo ? (
+                endAdornment: (
                   <InputAdornment position="end">
-                    <IconButton
-                      aria-label="ล้างคำค้นหา"
-                      disabled={loading}
-                      edge="end"
-                      onClick={() => void clearAuditSearchText()}
-                      size="small"
-                    >
-                      <X size={16} />
-                    </IconButton>
+                    {docNo ? (
+                      <IconButton
+                        aria-label="ล้างคำค้นหา"
+                        disabled={loading}
+                        edge="end"
+                        onClick={() => void clearAuditSearchText()}
+                        size="small"
+                      >
+                        <X size={16} />
+                      </IconButton>
+                    ) : null}
+                    <Tooltip arrow title="ค้นหาเลขบิลหลายใบหรือช่วงได้ เช่น เลขเริ่ม:เลขจบ,เลขเดี่ยว">
+                      <IconButton aria-label="คำแนะนำการค้นหา" edge="end" size="small" tabIndex={-1}>
+                        <HelpCircle size={15} />
+                      </IconButton>
+                    </Tooltip>
                   </InputAdornment>
-                ) : null,
+                ),
                 startAdornment: <InputAdornment position="start"><Search size={16} /></InputAdornment>,
               },
             }}
           />
-          <Stack direction="row" spacing={1} sx={{ alignItems: "stretch" }}>
-            <AppButton disabled={loading} onClick={() => void loadLogs()} size="small" sx={{ flex: { xs: 1, md: "0 0 auto" }, minHeight: 40, minWidth: { md: 112 } }} tone="primary">ค้นหา</AppButton>
-            <AppButton disabled={loading} onClick={() => void loadLogs()} size="small" startIcon={<RefreshCw size={15} />} sx={{ flex: { xs: 1, md: "0 0 auto" }, minHeight: 40, minWidth: { md: 112 } }}>โหลดใหม่</AppButton>
+          <Stack direction="row" spacing={0.5} sx={{ alignItems: "center" }}>
+            <Tooltip arrow title="โหลดข้อมูลใหม่">
+              <span>
+                <IconButton aria-label="โหลดใหม่" disabled={loading} onClick={() => void loadLogs()} size="medium" sx={{ border: 1, borderColor: "divider", borderRadius: 1, height: 40, width: 40 }}>
+                  <RefreshCw size={16} />
+                </IconButton>
+              </span>
+            </Tooltip>
           </Stack>
         </Box>
         {isMobile ? (
