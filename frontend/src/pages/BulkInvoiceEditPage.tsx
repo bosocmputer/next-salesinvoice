@@ -1632,10 +1632,10 @@ function PaymentChangePreviewPanel({ preview, displayTotalAmount }: { preview: D
             ))}
           </Box>
         ) : null}
-        {before.details.length ? (
+        {(before.details ?? []).length ? (
           <Box>
             <Typography color="text.secondary" sx={{ display: "block", mb: 0.5 }} variant="caption">
-              รายละเอียดการชำระ ({before.details.length} รายการ)
+              รายละเอียดการชำระ ({(before.details ?? []).length} รายการ)
             </Typography>
             <TableContainer component={Paper} variant="outlined">
               <Table size="small">
@@ -1650,7 +1650,7 @@ function PaymentChangePreviewPanel({ preview, displayTotalAmount }: { preview: D
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {before.details.map((row, idx) => {
+                  {(before.details ?? []).map((row, idx) => {
                     const a = after?.details[idx];
                     const changed = a ? moneyValueChanged(a.amount, row.amount) : false;
                     const docTypeLabel = CB_DOC_TYPE_LABELS[row.docType] ?? `doc_type=${row.docType}`;
@@ -1747,13 +1747,14 @@ function simulatePaymentAfter(before: NonNullable<DocumentChangePreview["payment
   if (payCash < newCash) payCash = newCash;
   const moneyChange = Math.max(0, round2(payCash - newCash));
 
-  // Scale detail rows by same ratio
+  // Scale detail rows by same ratio (guard against null from backend)
+  const safeDetails = before.details ?? [];
   let details: typeof before.details;
   if (oldPay <= 0.005) {
-    details = before.details.map((d) => ({ ...d, amount: "0.00", sumAmount: "0.00" }));
+    details = safeDetails.map((d) => ({ ...d, amount: "0.00", sumAmount: "0.00" }));
   } else {
     const ratio = newTotal / oldPay;
-    details = before.details.map((d) => ({
+    details = safeDetails.map((d) => ({
       ...d,
       amount: round2(parseFloat2(d.amount) * ratio).toFixed(2),
       sumAmount: round2(parseFloat2(d.sumAmount) * ratio).toFixed(2),

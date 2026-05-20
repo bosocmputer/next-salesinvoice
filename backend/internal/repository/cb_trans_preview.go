@@ -39,7 +39,7 @@ func (r *DocumentRepository) fetchDocumentPayment(ctx context.Context, q documen
 		from cb_trans
 		where trans_flag = $1 and doc_no = $2
 	`, salesTransFlag, docNo)
-	p := &model.DocumentPayment{}
+	p := &model.DocumentPayment{Details: []model.DocumentPaymentDetail{}}
 	if err := row.Scan(
 		&p.DocNo, &p.TransFlag, &p.TransType, &p.PayType,
 		&p.TotalAmount, &p.TotalNetAmount, &p.TotalAmountPay,
