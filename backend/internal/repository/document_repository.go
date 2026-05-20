@@ -723,15 +723,36 @@ func (r *DocumentRepository) BulkPreviewChange(ctx context.Context, req model.Bu
 
 	// New doc numbers are allocated only when the user picked a new format.
 	// Otherwise each bill keeps its existing doc_no.
+	// DocNoOverrides lets the frontend supply a specific new doc_no for a bill
+	// (used by Regen flow to skip a duplicate number without re-running the
+	// full sequence from scratch).
 	nextDocNos := make([]string, len(req.DocNos))
 	if req.DocFormatCode != "" {
-		stepCtx, cancel = withStepTimeout()
-		allocated, err := r.nextDocNoSequence(stepCtx, req.DocFormatCode, len(req.DocNos))
-		cancel()
-		if err != nil {
-			return model.BulkDocumentChangeResult{}, err
+		// Count how many bills still need auto-allocation (no override provided).
+		needAlloc := 0
+		for _, docNo := range req.DocNos {
+			if req.DocNoOverrides[docNo] == "" {
+				needAlloc++
+			}
 		}
-		copy(nextDocNos, allocated)
+		var allocated []string
+		if needAlloc > 0 {
+			stepCtx, cancel = withStepTimeout()
+			allocated, err = r.nextDocNoSequence(stepCtx, req.DocFormatCode, needAlloc)
+			cancel()
+			if err != nil {
+				return model.BulkDocumentChangeResult{}, err
+			}
+		}
+		allocIdx := 0
+		for i, docNo := range req.DocNos {
+			if override := req.DocNoOverrides[docNo]; override != "" {
+				nextDocNos[i] = override
+			} else {
+				nextDocNos[i] = allocated[allocIdx]
+				allocIdx++
+			}
+		}
 	} else {
 		copy(nextDocNos, req.DocNos)
 	}

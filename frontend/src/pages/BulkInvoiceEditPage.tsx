@@ -511,13 +511,29 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
   }
 
   // regenBlockedItem — re-preview เฉพาะบิลที่ blocked เพราะเลขซ้ำ
-  // backend จะออกเลขใหม่ให้อัตโนมัติ ไม่ต้อง query running-number แยก
-  async function regenBlockedItem(docNo: string, _formatCode: string) {
+  // ดึง running-number ใหม่ก่อน แล้วส่งเป็น docNoOverrides เพื่อบังคับ
+  // backend ใช้เลขนั้น (ไม่ให้ backend ออกเลขเองซ้ำอีก)
+  async function regenBlockedItem(docNo: string, formatCode: string) {
     setBusy(true);
     setMessage("");
     try {
+      // Step 1: get a fresh next doc_no from the DB (reads latest ic_trans)
+      const rnResp = await apiGet<{ nextDocNo: string; latestDocNo: string; formatCode: string }>(
+        `/api/v1/documents/running-number?formatCode=${encodeURIComponent(formatCode)}`,
+      );
+      if (!rnResp.success || !rnResp.data?.nextDocNo) {
+        setMessage(rnResp.error?.detail || "ไม่สามารถออกเลขเอกสารใหม่ได้");
+        return;
+      }
+      const nextDocNo = rnResp.data.nextDocNo;
+
+      // Step 2: preview with the forced new doc_no so backend doesn't re-generate the same duplicate
       const base = buildBulkRequest();
-      const req: BulkDocumentChangeRequest = { ...base, docNos: [docNo] };
+      const req: BulkDocumentChangeRequest = {
+        ...base,
+        docNos: [docNo],
+        docNoOverrides: { [docNo]: nextDocNo },
+      };
       const prevResp = await apiPost<BulkDocumentChangeResult>("/api/v1/documents/bulk/preview-change", req);
       if (!prevResp.success || !prevResp.data) {
         setMessage(prevResp.error?.detail || "ตรวจสอบบิลใหม่ไม่สำเร็จ");

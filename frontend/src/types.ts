@@ -181,6 +181,7 @@ export type BulkDocumentChangeRequest = {
   remark: string;
   removeItemCodes: string[];
   perDocEdits?: DocEdit[];
+  docNoOverrides?: Record<string, string>;
 };
 
 export type BulkDocumentChangeItem = {

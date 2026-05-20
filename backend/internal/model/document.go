@@ -169,6 +169,10 @@ type BulkDocumentChangeRequest struct {
 	// allows per-bill remove/add item operations. RemoveItemCodes remains for
 	// backward compatibility when PerDocEdits is empty.
 	PerDocEdits []DocEdit `json:"perDocEdits"`
+	// DocNoOverrides maps original doc_no → forced new doc_no.
+	// When set, backend skips running-number generation for that bill and uses
+	// the provided value directly (still validates uniqueness).
+	DocNoOverrides map[string]string `json:"docNoOverrides,omitempty"`
 }
 
 // DocEdit holds per-document line edits applied on top of the bulk request.
