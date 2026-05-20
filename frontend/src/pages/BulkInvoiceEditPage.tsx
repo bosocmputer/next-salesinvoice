@@ -510,6 +510,44 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
     }
   }
 
+  // regenBlockedItem ออกเลขบิลใหม่จาก DB แล้ว re-preview เฉพาะบิลนั้น
+  // ใช้เมื่อ blocked เพราะเลขซ้ำ — ไม่ reset preview ทั้งหมด
+  async function regenBlockedItem(docNo: string, formatCode: string) {
+    setBusy(true);
+    setMessage("");
+    try {
+      const numResp = await apiGet<{ nextDocNo: string }>(`/api/v1/documents/running-number?formatCode=${encodeURIComponent(formatCode)}`);
+      if (!numResp.success || !numResp.data?.nextDocNo) {
+        setMessage(numResp.error?.detail || "ออกเลขใหม่ไม่สำเร็จ");
+        return;
+      }
+      const newDocNo = numResp.data.nextDocNo;
+      // Re-preview เฉพาะบิลนี้ด้วยเลขใหม่
+      const req: BulkDocumentChangeRequest = {
+        ...buildBulkRequest(),
+        docNos: [docNo],
+      };
+      const prevResp = await apiPost<BulkDocumentChangeResult>("/api/v1/documents/bulk/preview-change", req);
+      if (!prevResp.success || !prevResp.data) {
+        setMessage(prevResp.error?.detail || "ตรวจสอบบิลใหม่ไม่สำเร็จ");
+        return;
+      }
+      const updatedItem = prevResp.data.items[0];
+      if (!updatedItem) return;
+      // Merge item ที่ regen เข้า preview state เดิม
+      setPreview((prev) => {
+        if (!prev) return prev;
+        const items = prev.items.map((item) => (item.docNo === docNo ? { ...updatedItem, newDocNo } : item));
+        const readyCount = items.filter((i) => i.status === "ready").length;
+        const blockedCount = items.filter((i) => i.status === "blocked" || i.status === "failed").length;
+        return { ...prev, items, readyCount, blockedCount };
+      });
+      toast(`ออกเลขใหม่ ${newDocNo} สำเร็จ`, "success");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function applyBulk() {
     if (!preview || !readyToApply || !isAdmin) return;
     setBusy(true);
@@ -1000,6 +1038,7 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
             setConfirmApplyOpen(true);
           }}
           onSelectDoc={(docNo) => setPreviewDialogDocNo(docNo)}
+          onRegenItem={regenBlockedItem}
         />
       ) : null}
       {confirmApplyOpen && preview ? (
@@ -1048,6 +1087,7 @@ function BulkPreviewDialog({
   onClose,
   onRequestApply,
   onSelectDoc,
+  onRegenItem,
 }: {
   busy: boolean;
   canApply: boolean;
@@ -1066,6 +1106,7 @@ function BulkPreviewDialog({
   onClose: () => void;
   onRequestApply: () => void;
   onSelectDoc: (docNo: string) => void;
+  onRegenItem: (docNo: string, formatCode: string) => Promise<void>;
 }) {
   const isMobile = useMediaQuery(appTheme.breakpoints.down("sm"));
   const reviewQueue = [...result.items].sort((a, b) => reviewQueuePriority(a) - reviewQueuePriority(b));
@@ -1162,8 +1203,10 @@ function BulkPreviewDialog({
           <Box sx={{ alignItems: "start", display: "grid", gap: 1.5, gridTemplateColumns: { xs: "1fr", md: canNavigate ? "340px minmax(0, 1fr)" : "1fr" } }}>
             {canNavigate ? (
               <BulkReviewQueuePanel
+                busy={busy}
                 items={reviewQueue}
                 onSelectDoc={onSelectDoc}
+                onRegenItem={onRegenItem}
                 selectedDocNo={selectedItem?.docNo || ""}
               />
             ) : null}
@@ -1192,7 +1235,7 @@ function BulkPreviewDialog({
 
               {selectedPreview ? (
                 <>
-                  <PreviewChangeSummaryPanel preview={selectedPreview} />
+                  {/* PreviewChangeSummaryPanel hidden — จุดเปลี่ยนที่ต้องโฟกัส ซ่อนไว้ก่อน */}
                   <Box sx={{ display: "grid", columnGap: 2, rowGap: 0.75, gridTemplateColumns: { xs: "1fr", sm: "repeat(2, 1fr)", lg: "repeat(4, 1fr)" } }}>
                     <DocumentFact label="เลขบิลเดิม" value={selectedPreview.before.docNo} strong />
                     <DocumentFact changed={valueChanged(selectedPreview.after.docNo, selectedPreview.before.docNo)} label="เลขบิลใหม่" previousValue={selectedPreview.before.docNo} value={selectedPreview.after.docNo} strong />
@@ -1247,9 +1290,7 @@ function BulkPreviewDialog({
                     </Box>
                   </Stack>
 
-                  {selectedPreview.paymentBefore && moneyValueChanged(displayTotalAmount, selectedPreview.before.totalAmount) ? (
-                    <PaymentChangePreviewPanel displayTotalAmount={displayTotalAmount} preview={selectedPreview} />
-                  ) : null}
+                  <PaymentChangePreviewPanel displayTotalAmount={displayTotalAmount} preview={selectedPreview} />
                 </>
               ) : (
                 <EmptyState
@@ -1313,13 +1354,19 @@ function PreviewLoadingDialog({
   );
 }
 
+const DUPLICATE_DOC_NO_PHRASE = "ถูกใช้แล้ว";
+
 function BulkReviewQueuePanel({
+  busy,
   items,
   onSelectDoc,
+  onRegenItem,
   selectedDocNo,
 }: {
+  busy: boolean;
   items: BulkDocumentChangeItem[];
   onSelectDoc: (docNo: string) => void;
+  onRegenItem: (docNo: string, formatCode: string) => Promise<void>;
   selectedDocNo: string;
 }) {
   return (
@@ -1346,31 +1393,51 @@ function BulkReviewQueuePanel({
           const selected = item.docNo === selectedDocNo;
           const totalAmount = item.preview ? formatMoney(item.preview.totals.totalAmount) : "-";
           const customerCode = item.preview?.after.customerCode || "-";
+          const isDuplicateBlocked = (item.status === "blocked" || item.status === "failed")
+            && item.message.includes(DUPLICATE_DOC_NO_PHRASE);
+          const formatCode = item.preview?.after.docFormatCode || item.preview?.before.docFormatCode || "";
           return (
-            <Button
-              key={item.docNo}
-              onClick={() => onSelectDoc(item.docNo)}
-              type="button"
-              variant="outlined"
-              sx={{
-                alignItems: "stretch",
-                bgcolor: selected ? "rgba(36, 90, 109, 0.10)" : "background.paper",
-                borderColor: selected ? "primary.main" : "divider",
-                color: "text.primary",
-                display: "block",
-                minHeight: 78,
-                p: 1,
-                textAlign: "left",
-              }}
-            >
-              <Stack spacing={0.75}>
-                <DocCode value={`${item.docNo} → ${item.newDocNo || "-"}`} noWrap />
-                <Stack direction="row" spacing={1} sx={{ justifyContent: "space-between" }}>
-                  <Typography color="text.secondary" noWrap variant="caption">ลูกหนี้ {customerCode}</Typography>
-                  <Typography color="primary.main" noWrap sx={{ fontVariantNumeric: "tabular-nums", fontWeight: 800 }} variant="caption">{totalAmount}</Typography>
+            <Stack key={item.docNo} spacing={0.5}>
+              <Button
+                onClick={() => onSelectDoc(item.docNo)}
+                type="button"
+                variant="outlined"
+                sx={{
+                  alignItems: "stretch",
+                  bgcolor: selected ? "rgba(36, 90, 109, 0.10)" : "background.paper",
+                  borderColor: selected ? "primary.main" : isDuplicateBlocked ? "error.main" : "divider",
+                  color: "text.primary",
+                  display: "block",
+                  minHeight: 78,
+                  p: 1,
+                  textAlign: "left",
+                }}
+              >
+                <Stack spacing={0.75}>
+                  <DocCode value={`${item.docNo} → ${item.newDocNo || "-"}`} noWrap />
+                  <Stack direction="row" spacing={1} sx={{ justifyContent: "space-between" }}>
+                    <Typography color="text.secondary" noWrap variant="caption">ลูกหนี้ {customerCode}</Typography>
+                    <Typography color="primary.main" noWrap sx={{ fontVariantNumeric: "tabular-nums", fontWeight: 800 }} variant="caption">{totalAmount}</Typography>
+                  </Stack>
+                  {isDuplicateBlocked ? (
+                    <Typography color="error.main" variant="caption" noWrap>เลขบิลซ้ำ — กด Regen</Typography>
+                  ) : null}
                 </Stack>
-              </Stack>
-            </Button>
+              </Button>
+              {isDuplicateBlocked && formatCode ? (
+                <AppButton
+                  disabled={busy}
+                  fullWidth
+                  size="small"
+                  startIcon={<RefreshCw size={14} />}
+                  tone="danger"
+                  type="button"
+                  onClick={() => void onRegenItem(item.docNo, formatCode)}
+                >
+                  ออกเลขใหม่
+                </AppButton>
+              ) : null}
+            </Stack>
           );
         })}
         {!items.length ? <EmptyState title="ไม่มีเอกสารในชุดนี้" description="เลือกบิลใหม่แล้วพรีวิวอีกครั้ง" /> : null}
@@ -1568,7 +1635,7 @@ function PaymentChangePreviewPanel({ preview, displayTotalAmount }: { preview: D
     return (
       <Paper variant="outlined" sx={{ p: 1.25 }}>
         <Stack spacing={0.5}>
-          <EmphasisText>การชำระเงิน (cb_trans)</EmphasisText>
+          <EmphasisText>การชำระเงิน</EmphasisText>
           <Typography color="text.secondary" variant="body2">
             บิลนี้ไม่มีข้อมูลใน cb_trans (เช่น ขายเชื่อ/ลูกหนี้) — ระบบจะไม่ปรับยอดชำระ
           </Typography>
@@ -1595,7 +1662,7 @@ function PaymentChangePreviewPanel({ preview, displayTotalAmount }: { preview: D
   return (
     <Paper variant="outlined" sx={{ p: 1.25 }}>
       <Stack spacing={1}>
-        <EmphasisText>การชำระเงิน (cb_trans)</EmphasisText>
+        <EmphasisText>การชำระเงิน</EmphasisText>
         <Box sx={{ display: "grid", gap: 1, gridTemplateColumns: { xs: "1fr", sm: "repeat(2, 1fr)", md: "repeat(3, 1fr)" } }}>
           <TotalLine
             changed={after ? moneyValueChanged(after.totalAmountPay, before.totalAmountPay) : false}
