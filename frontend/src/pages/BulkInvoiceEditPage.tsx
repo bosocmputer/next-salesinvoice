@@ -1251,7 +1251,7 @@ function BulkPreviewDialog({
                     </Box>
                   </Stack>
 
-                  <PaymentChangePreviewPanel preview={selectedPreview} />
+                  <PaymentChangePreviewPanel displayTotalAmount={displayTotalAmount} preview={selectedPreview} />
                 </>
               ) : (
                 <EmptyState
@@ -1557,9 +1557,15 @@ const CB_DOC_TYPE_LABELS: Record<number, string> = {
 
 // PaymentChangePreviewPanel แสดงข้อมูลการชำระเงิน (cb_trans + cb_trans_detail)
 // ก่อนและหลังการ apply ตามที่ระบบจะ sync ให้ตรงกับยอดบิลใหม่
-function PaymentChangePreviewPanel({ preview }: { preview: DocumentChangePreview }) {
+// displayTotalAmount คือยอดที่ user ปรับ client-side (อาจต่างจาก preview.paymentAfter
+// ซึ่ง backend simulate จากยอดก่อน user toggle remove/add lines)
+function PaymentChangePreviewPanel({ preview, displayTotalAmount }: { preview: DocumentChangePreview; displayTotalAmount?: string }) {
   const before = preview.paymentBefore;
-  const after = preview.paymentAfter;
+  // Re-simulate ด้วย displayTotalAmount ถ้า user ปรับยอด client-side
+  // ถ้าไม่มี displayTotalAmount ใช้ paymentAfter จาก backend ตามเดิม
+  const after = before && displayTotalAmount != null
+    ? simulatePaymentAfter(before, displayTotalAmount)
+    : preview.paymentAfter;
   if (!before) {
     return (
       <Paper variant="outlined" sx={{ p: 1.25 }}>
@@ -1705,6 +1711,74 @@ function round2(n: number): number {
 function parseFloat2(s: string): number {
   const n = parseFloat(s);
   return Number.isFinite(n) ? n : 0;
+}
+
+// Mirror of backend simulateDocumentPaymentAfter: proportionally rescales all
+// cb_trans payment fields to match newTotal. Returns a new DocumentPayment
+// object — never mutates the original.
+function simulatePaymentAfter(before: NonNullable<DocumentChangePreview["paymentBefore"]>, newTotalStr: string): NonNullable<DocumentChangePreview["paymentBefore"]> {
+  const newTotal = parseFloat2(newTotalStr);
+  if (newTotal < 0) return before;
+
+  const FIELDS = ["cashAmount", "chqAmount", "tranferAmount", "cardAmount", "walletAmount", "couponAmount", "pointAmount", "depositAmount", "advanceAmount", "pettyCashAmount"] as const;
+  const oldPay = parseFloat2(before.totalAmountPay);
+
+  let scaled: number[];
+  if (oldPay <= 0.005) {
+    // oldTotal == 0: entire amount to cash, others zero (mirrors Go edge case)
+    scaled = FIELDS.map((_, i) => (i === 0 ? newTotal : 0));
+  } else {
+    const ratio = newTotal / oldPay;
+    const raw = FIELDS.map((f) => round2(parseFloat2(before[f]) * ratio));
+    // absorb rounding residual into cash_amount (index 0)
+    const sum = raw.reduce((a, b) => a + b, 0);
+    raw[0] = round2(raw[0] + (newTotal - sum));
+    if (raw[0] < 0) raw[0] = 0;
+    scaled = raw;
+  }
+
+  // Reconcile pay_cash_amount / money_change
+  let payCash = parseFloat2(before.payCashAmount);
+  const newCash = scaled[0];
+  if (oldPay > 0.005) {
+    const ratio = newTotal / oldPay;
+    payCash = round2(parseFloat2(before.payCashAmount) * ratio);
+  }
+  if (payCash < newCash) payCash = newCash;
+  const moneyChange = Math.max(0, round2(payCash - newCash));
+
+  // Scale detail rows by same ratio
+  let details: typeof before.details;
+  if (oldPay <= 0.005) {
+    details = before.details.map((d) => ({ ...d, amount: "0.00", sumAmount: "0.00" }));
+  } else {
+    const ratio = newTotal / oldPay;
+    details = before.details.map((d) => ({
+      ...d,
+      amount: round2(parseFloat2(d.amount) * ratio).toFixed(2),
+      sumAmount: round2(parseFloat2(d.sumAmount) * ratio).toFixed(2),
+    }));
+  }
+
+  return {
+    ...before,
+    totalAmount: newTotal.toFixed(2),
+    totalNetAmount: newTotal.toFixed(2),
+    totalAmountPay: newTotal.toFixed(2),
+    payCashAmount: payCash.toFixed(2),
+    moneyChange: moneyChange.toFixed(2),
+    cashAmount: scaled[0].toFixed(2),
+    chqAmount: scaled[1].toFixed(2),
+    tranferAmount: scaled[2].toFixed(2),
+    cardAmount: scaled[3].toFixed(2),
+    walletAmount: scaled[4].toFixed(2),
+    couponAmount: scaled[5].toFixed(2),
+    pointAmount: scaled[6].toFixed(2),
+    depositAmount: scaled[7].toFixed(2),
+    advanceAmount: scaled[8].toFixed(2),
+    pettyCashAmount: scaled[9].toFixed(2),
+    details,
+  };
 }
 
 // Mirror of backend computeTotalsFromLines: vat_type 0=no vat, 1=incl 7%, 2=excl 7%, else stored.
