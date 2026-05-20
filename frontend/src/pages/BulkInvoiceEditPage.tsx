@@ -1228,7 +1228,7 @@ function BulkPreviewDialog({
 
               {selectedItem && !selectedIsWritable ? (() => {
                 const isDup = selectedItem.message.includes("ถูกใช้แล้ว");
-                const fmtCode = selectedItem.preview?.after.docFormatCode || selectedItem.preview?.before.docFormatCode || "";
+                const fmtCode = selectedItem.preview?.after.docFormatCode || selectedItem.preview?.before.docFormatCode || selectedFormat;
                 return (
                   <Alert
                     severity="warning"
