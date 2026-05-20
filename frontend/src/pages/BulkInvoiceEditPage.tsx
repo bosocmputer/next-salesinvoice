@@ -510,23 +510,14 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
     }
   }
 
-  // regenBlockedItem ออกเลขบิลใหม่จาก DB แล้ว re-preview เฉพาะบิลนั้น
-  // ใช้เมื่อ blocked เพราะเลขซ้ำ — ไม่ reset preview ทั้งหมด
-  async function regenBlockedItem(docNo: string, formatCode: string) {
+  // regenBlockedItem — re-preview เฉพาะบิลที่ blocked เพราะเลขซ้ำ
+  // backend จะออกเลขใหม่ให้อัตโนมัติ ไม่ต้อง query running-number แยก
+  async function regenBlockedItem(docNo: string, _formatCode: string) {
     setBusy(true);
     setMessage("");
     try {
-      const numResp = await apiGet<{ nextDocNo: string }>(`/api/v1/documents/running-number?formatCode=${encodeURIComponent(formatCode)}`);
-      if (!numResp.success || !numResp.data?.nextDocNo) {
-        setMessage(numResp.error?.detail || "ออกเลขใหม่ไม่สำเร็จ");
-        return;
-      }
-      const newDocNo = numResp.data.nextDocNo;
-      // Re-preview เฉพาะบิลนี้ด้วยเลขใหม่
-      const req: BulkDocumentChangeRequest = {
-        ...buildBulkRequest(),
-        docNos: [docNo],
-      };
+      const base = buildBulkRequest();
+      const req: BulkDocumentChangeRequest = { ...base, docNos: [docNo] };
       const prevResp = await apiPost<BulkDocumentChangeResult>("/api/v1/documents/bulk/preview-change", req);
       if (!prevResp.success || !prevResp.data) {
         setMessage(prevResp.error?.detail || "ตรวจสอบบิลใหม่ไม่สำเร็จ");
@@ -534,15 +525,19 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
       }
       const updatedItem = prevResp.data.items[0];
       if (!updatedItem) return;
-      // Merge item ที่ regen เข้า preview state เดิม
+      // Merge item ที่ regen เข้า preview state เดิม (ไม่ reset บิลอื่น)
       setPreview((prev) => {
         if (!prev) return prev;
-        const items = prev.items.map((item) => (item.docNo === docNo ? { ...updatedItem, newDocNo } : item));
+        const items = prev.items.map((item) => (item.docNo === docNo ? updatedItem : item));
         const readyCount = items.filter((i) => i.status === "ready").length;
         const blockedCount = items.filter((i) => i.status === "blocked" || i.status === "failed").length;
         return { ...prev, items, readyCount, blockedCount };
       });
-      toast(`ออกเลขใหม่ ${newDocNo} สำเร็จ`, "success");
+      if (updatedItem.status === "ready" || updatedItem.status === "warning") {
+        toast(`ออกเลขใหม่ ${updatedItem.newDocNo} สำเร็จ`, "success");
+      } else {
+        toast(updatedItem.message || "ออกเลขใหม่แล้วแต่ยังมีปัญหา", "warning");
+      }
     } finally {
       setBusy(false);
     }
