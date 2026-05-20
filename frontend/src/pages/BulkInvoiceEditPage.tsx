@@ -1226,12 +1226,30 @@ function BulkPreviewDialog({
                 </Stack>
               ) : null}
 
-              {selectedItem && !selectedIsWritable ? (
-                <Alert severity="warning">
-                  <EmphasisText>เอกสารนี้ระบบจะไม่ส่งเข้า SML</EmphasisText>
-                  {selectedItem.message || "เลือกเอกสารถัดไปเพื่อดูรายการที่ส่งได้"}
-                </Alert>
-              ) : null}
+              {selectedItem && !selectedIsWritable ? (() => {
+                const isDup = selectedItem.message.includes("ถูกใช้แล้ว");
+                const fmtCode = selectedItem.preview?.after.docFormatCode || selectedItem.preview?.before.docFormatCode || "";
+                return (
+                  <Alert
+                    severity="warning"
+                    action={isDup && fmtCode ? (
+                      <AppButton
+                        disabled={busy}
+                        size="small"
+                        startIcon={<RefreshCw size={14} />}
+                        tone="danger"
+                        type="button"
+                        onClick={() => void onRegenItem(selectedItem.docNo, fmtCode)}
+                      >
+                        ออกเลขใหม่
+                      </AppButton>
+                    ) : undefined}
+                  >
+                    <EmphasisText>เอกสารนี้ระบบจะไม่ส่งเข้า SML</EmphasisText>
+                    {selectedItem.message || "เลือกเอกสารถัดไปเพื่อดูรายการที่ส่งได้"}
+                  </Alert>
+                );
+              })() : null}
 
               {selectedPreview ? (
                 <>
