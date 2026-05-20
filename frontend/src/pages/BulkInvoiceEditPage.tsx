@@ -1159,10 +1159,6 @@ function BulkPreviewDialog({
             </Alert>
           ) : null}
 
-          <Alert severity="info">
-            ระบบจะปรับ <strong>cb_trans / cb_trans_detail</strong> ให้ตรงกับยอดบิลใหม่อัตโนมัติ (ยอดชำระ = ยอดบิลใหม่)
-          </Alert>
-
           <Box sx={{ alignItems: "start", display: "grid", gap: 1.5, gridTemplateColumns: { xs: "1fr", md: canNavigate ? "340px minmax(0, 1fr)" : "1fr" } }}>
             {canNavigate ? (
               <BulkReviewQueuePanel
@@ -1251,7 +1247,9 @@ function BulkPreviewDialog({
                     </Box>
                   </Stack>
 
-                  <PaymentChangePreviewPanel displayTotalAmount={displayTotalAmount} preview={selectedPreview} />
+                  {selectedPreview.paymentBefore && moneyValueChanged(displayTotalAmount, selectedPreview.before.totalAmount) ? (
+                    <PaymentChangePreviewPanel displayTotalAmount={displayTotalAmount} preview={selectedPreview} />
+                  ) : null}
                 </>
               ) : (
                 <EmptyState
