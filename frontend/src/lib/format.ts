@@ -10,10 +10,10 @@ import type {
 } from "../types";
 
 export const saleTypeLabels: Record<number, string> = {
-  1: "ขายเงินเชื่อ",
-  2: "ขายเงินสด",
-  3: "ขายสินค้าเงินเชื่อ (สินค้าบริการ)",
-  4: "ขายสินค้าเงินสด (สินค้าบริการ)",
+  0: "ขายเงินเชื่อ",
+  1: "ขายเงินสด",
+  2: "ขายสินค้าเงินเชื่อ (สินค้าบริการ)",
+  3: "ขายสินค้าเงินสด (สินค้าบริการ)",
 };
 
 export const taxTypeLabels: Record<number, string> = {
@@ -121,7 +121,7 @@ export function formatDocumentTime(value: string) {
   return `${match[1].padStart(2, "0")}:${match[2]}`;
 }
 
-const DATETIME_FORMATTER = new Intl.DateTimeFormat("th-TH", { dateStyle: "short", timeStyle: "short" });
+const DATETIME_FORMATTER = new Intl.DateTimeFormat("th-TH", { dateStyle: "short", timeStyle: "short", timeZone: "Asia/Bangkok" });
 
 export function formatDateTime(value: string) {
   if (!value) return "-";
@@ -218,6 +218,7 @@ export function productLineTitle(line: DocumentDetailLine, meta = productLineMet
 }
 
 function sameLineIdentity(current: DocumentDetailLine, previous: DocumentDetailLine) {
+  if (current.rowOrder && previous.rowOrder) return current.rowOrder === previous.rowOrder;
   const currentCode = current.itemCode.trim();
   const previousCode = previous.itemCode.trim();
   if (currentCode && previousCode) return currentCode === previousCode;
@@ -296,6 +297,7 @@ export function documentSummaryFromRawState(raw: Record<string, unknown>, fallba
 
 export function documentLineFromRawState(raw: Record<string, unknown>, index: number): DocumentDetailLine {
   return {
+    rowOrder: rawInt(raw, ["rowOrder", "roworder"], index + 1),
     lineNumber: rawInt(raw, ["lineNumber", "line_number", "roworder"], index + 1),
     itemCode: rawText(raw, ["itemCode", "item_code"]),
     itemName: rawText(raw, ["itemName", "item_name"]),
@@ -322,6 +324,10 @@ export function buildAuditInvoiceDialog(item: DocumentHistoryItem, side: "before
     comparison: side === "after" ? { beforeDoc, beforeLines } : undefined,
     title: side === "before" ? "รายละเอียดบิล: ข้อมูลเดิม" : "รายละเอียดบิล: ข้อมูลใหม่",
   };
+}
+
+export function buildAuditComparisonDialog(item: DocumentHistoryItem): AuditInvoiceDialogState {
+  return buildAuditInvoiceDialog(item, "after");
 }
 
 export function buildPreviewChangeItems(preview: DocumentChangePreview): PreviewChangeItem[] {

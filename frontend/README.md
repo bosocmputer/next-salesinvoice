@@ -46,7 +46,7 @@ npx playwright test tests/e2e/a11y.spec.ts  # axe-core smoke (login + bulk-edit)
 ## Routes
 
 - `/login`: เข้าสู่ระบบ
-- `/bulk-edit`: หน้าเลือกบิล ตั้งค่า preview และส่งเข้า SML
+- `/bulk-edit`: หน้าเลือกบิล ตั้งค่า preview ส่งเข้า SML แบบ async progress และ retry เฉพาะบิลที่ไม่สำเร็จ
 - `/audit`: ประวัติ/rollback/technical JSON สำหรับ Admin
 - `/audit/:docNo`: เปิด audit โดยระบุเลขบิล
 - `/system/status`: Admin diagnostic/setup สำหรับสถานะฐานและติดตั้ง `nsi_*`
@@ -76,8 +76,18 @@ npx playwright test tests/e2e/a11y.spec.ts  # axe-core smoke (login + bulk-edit)
 - DocCode ใช้ mono + bold; `tone="primary"` สำหรับ destination doc
 - Status badge: `<StatusBadge tone="success|danger">` มี icon (Check/X) สื่อสถานะ; `neutral` ไม่มี icon (เป็น count chip)
 - Mobile (xs): touch target 44px, dialogs fullScreen, DataGrid ถูกแทนด้วย card view
-- Search fields ต้องมี clear action และคงพฤติกรรม reload current filter
+- Search fields ต้องมี clear action; ใน `/bulk-edit` การเปลี่ยนวันที่หรือ clear คำค้นหาไม่ auto-load ต้องกด `ค้นหา` หรือ Enter เพื่อโหลดข้อมูล
 - Dialog title ใช้ `SectionTitle level="h2"`
+
+### Bulk apply UX
+
+- Confirm ส่งเข้า SML เรียก `POST /api/v1/documents/bulk/apply-change/start`
+- Preview dialog รองรับแก้จำนวนสินค้า existing line แบบเพิ่ม/ลดได้ และยอดเอกสาร/queue ซ้ายอัปเดตทันที
+- Confirm flow ไม่มีช่องพิมพ์ยืนยันแล้ว: dialog สรุป → final warning → start batch
+- Progress dialog poll `GET /api/v1/documents/bulk/batches/:batchId` ทุก 1 วินาทีจน batch จบ
+- Dialog แสดง `กำลังส่ง X/Y`, counts ของ applied/failed/pending, บิลที่กำลังทำ และ failed messages ล่าสุด
+- ถ้า partial failure จะแสดงปุ่ม retry เฉพาะ failed/skipped ผ่าน `POST /api/v1/documents/bulk/batches/:batchId/retry-failed`
+- Audit ใช้ action `ดูการเปลี่ยนแปลง` เปิด dialog เดียวพร้อมข้อมูลเดิม -> ข้อมูลใหม่
 
 ### Accessibility (WCAG 2.1 AA)
 
@@ -96,5 +106,5 @@ npx playwright test tests/e2e/a11y.spec.ts  # axe-core smoke (login + bulk-edit)
 
 ## Dev Login
 
-- Code: `EMP001`
-- Password: `1234`
+- Code: `001`
+- Password: `001`

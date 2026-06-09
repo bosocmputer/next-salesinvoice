@@ -169,8 +169,11 @@ func (r *DocumentRepository) List(ctx context.Context, from, to time.Time, page,
 		select count(*)
 		from ic_trans
 		where trans_flag = $1
-			and doc_date >= $2
-			and doc_date <= $3
+			and (
+				$4::boolean
+				or ($5 <> '' and ic_trans.doc_no ilike $6)
+				or (doc_date >= $2 and doc_date <= $3)
+			)
 			and (
 				(not $4::boolean and ($5 = '' or ic_trans.doc_no ilike $6 or cust_code ilike $6 or remark ilike $6))
 				or
@@ -250,8 +253,11 @@ func (r *DocumentRepository) List(ctx context.Context, from, to time.Time, page,
 			limit 1
 		) snapshot on true
 		where trans_flag = $1
-			and doc_date >= $2
-			and doc_date <= $3
+			and (
+				$6::boolean
+				or ($7 <> '' and ic_trans.doc_no ilike $8)
+				or (doc_date >= $2 and doc_date <= $3)
+			)
 			and (
 				(not $6::boolean and ($7 = '' or ic_trans.doc_no ilike $8 or cust_code ilike $8 or remark ilike $8))
 				or
@@ -334,8 +340,11 @@ func (r *DocumentRepository) ListDocNos(ctx context.Context, from, to time.Time,
 		select doc_no
 		from ic_trans
 		where trans_flag = $1
-			and doc_date >= $2
-			and doc_date <= $3
+			and (
+				$4::boolean
+				or ($5 <> '' and doc_no ilike $6)
+				or (doc_date >= $2 and doc_date <= $3)
+			)
 			and (
 				(not $4::boolean and ($5 = '' or doc_no ilike $6 or cust_code ilike $6 or remark ilike $6))
 				or
@@ -383,6 +392,7 @@ func (r *DocumentRepository) Details(ctx context.Context, docNo string) ([]model
 	rows, err := r.pool.Query(queryCtx, `
 		select
 			doc_no,
+			roworder,
 			coalesce(line_number, 0),
 			coalesce(item_code, ''),
 			coalesce(item_name, ''),
@@ -413,6 +423,7 @@ func (r *DocumentRepository) Details(ctx context.Context, docNo string) ([]model
 		var item model.DocumentDetailLine
 		if err := rows.Scan(
 			&item.DocNo,
+			&item.RowOrder,
 			&item.LineNumber,
 			&item.ItemCode,
 			&item.ItemName,
@@ -461,10 +472,19 @@ func (r *DocumentRepository) PreviewChange(ctx context.Context, docNo string, re
 	if r.cfg.CbTransSyncEnabled {
 		paymentBefore, payErr := r.fetchDocumentPayment(queryCtx, r.pool, docNo)
 		if payErr == nil && paymentBefore != nil {
-			after := simulateDocumentPaymentAfter(*paymentBefore, preview.Totals.TotalAmount)
+			after, simErr := simulateDocumentPaymentAfter(*paymentBefore, preview.Totals.TotalAmount)
+			if simErr != nil {
+				return model.DocumentChangePreview{}, simErr
+			}
 			after.DocNo = req.NewDocNo
 			preview.PaymentBefore = paymentBefore
 			preview.PaymentAfter = &after
+		} else if payErr == nil && paymentBefore == nil && preview.After.InquiryType == 1 {
+			paymentAfter, simErr := newCashDocumentPayment(req.NewDocNo, preview.Totals.TotalAmount)
+			if simErr != nil {
+				return model.DocumentChangePreview{}, simErr
+			}
+			preview.PaymentAfter = paymentAfter
 		}
 	}
 	return preview, nil
@@ -502,6 +522,11 @@ func (r *DocumentRepository) ApplyChange(ctx context.Context, docNo string, req 
 	if err != nil {
 		return model.DocumentChangePreview{}, err
 	}
+	if len(req.LineEdits) > 0 {
+		if err := r.updateLineEdits(queryCtx, tx, docNo, req.LineEdits); err != nil {
+			return model.DocumentChangePreview{}, err
+		}
+	}
 	if len(req.RemoveItemCodes) > 0 {
 		if _, err := tx.Exec(queryCtx, `
 			delete from ic_trans_detail
@@ -514,7 +539,7 @@ func (r *DocumentRepository) ApplyChange(ctx context.Context, docNo string, req 
 	}
 
 	if len(req.AddedLines) > 0 {
-		if err := r.insertAddedDetailLines(queryCtx, tx, docNo, req.CustomerCode, req.InquiryType, req.VatType, req.AddedLines); err != nil {
+		if err := r.insertAddedDetailLines(queryCtx, tx, docNo, req.CustomerCode, req.InquiryType, req.AddedLines); err != nil {
 			return model.DocumentChangePreview{}, err
 		}
 	}
@@ -531,18 +556,16 @@ func (r *DocumentRepository) ApplyChange(ctx context.Context, docNo string, req 
 		set doc_no = $3,
 			cust_code = $4,
 			inquiry_type = $5,
-			vat_type = $6::integer,
-			tax_type = $6::smallint,
 			sum_amount_exclude_vat = case
 				when $6::integer = 0 then sum_amount
 				when $6::integer = 1 then round(sum_amount * 100.0 / (100.0 + 7), 2)
-				when $6::integer = 2 then sum_amount
+				when $6::integer in (2, 3) then 0::numeric
 				else sum_amount_exclude_vat
 			end,
 			total_vat_value = case
-				when $6::integer = 0 then 0::numeric
+				when $6::integer = 0 then round(sum_amount * 7 / 100.0, 2)
 				when $6::integer = 1 then sum_amount - round(sum_amount * 100.0 / (100.0 + 7), 2)
-				when $6::integer = 2 then round(sum_amount * 7 / 100.0, 2)
+				when $6::integer in (2, 3) then 0::numeric
 				else total_vat_value
 			end
 		where trans_flag = $1 and doc_no = $2
@@ -554,25 +577,32 @@ func (r *DocumentRepository) ApplyChange(ctx context.Context, docNo string, req 
 	}
 	if _, err := tx.Exec(queryCtx, `
 		update ic_trans
-		set doc_no = $3,
-			tax_doc_no = $3,
-			doc_format_code = $4,
-			cust_code = $5,
+		set doc_no = $3::varchar,
+			tax_doc_no = $3::varchar,
+			doc_format_code = $4::varchar,
+			cust_code = $5::varchar,
 			inquiry_type = $6,
 			vat_type = $7,
-			remark = $8,
+			remark = $8::varchar,
 			total_value = $9::numeric,
 			total_before_vat = $10::numeric,
 			total_vat_value = $11::numeric,
 			total_discount = $12::numeric,
-			total_amount = $13::numeric
-		where trans_flag = $1 and doc_no = $2
+			total_after_vat = $13::numeric,
+			total_except_vat = $14::numeric,
+			total_amount = $15::numeric,
+			doc_ref = case when $3::varchar <> $2::varchar then $2::varchar else doc_ref end
+		where trans_flag = $1 and doc_no = $2::varchar
 	`, salesTransFlag, docNo, req.NewDocNo, req.DocFormatCode, req.CustomerCode, req.InquiryType, req.VatType, req.Remark,
-		totals.TotalValue, totals.TotalBeforeVat, totals.TotalVatValue, totals.TotalDiscount, totals.TotalAmount); err != nil {
+		totals.TotalValue, totals.TotalBeforeVat, totals.TotalVatValue, totals.TotalDiscount, totals.TotalAfterVat, totals.TotalExceptVat, totals.TotalAmount); err != nil {
 		if normalized := normalizeDocumentWriteError(err, req.NewDocNo); normalized != nil {
 			return model.DocumentChangePreview{}, normalized
 		}
 		return model.DocumentChangePreview{}, fmt.Errorf("update document header: %w", err)
+	}
+
+	if err := r.syncVatSaleJournal(queryCtx, tx, docNo, req.NewDocNo, before, req, totals); err != nil {
+		return model.DocumentChangePreview{}, err
 	}
 
 	// Sync cb_trans + cb_trans_detail so the payment totals stay equal to
@@ -582,7 +612,13 @@ func (r *DocumentRepository) ApplyChange(ctx context.Context, docNo string, req 
 	if parseErr != nil {
 		return model.DocumentChangePreview{}, fmt.Errorf("parse new total for cb_trans sync: %w", parseErr)
 	}
-	if err := r.syncCbTransToTotal(queryCtx, tx, docNo, req.NewDocNo, newTotalFloat); err != nil {
+	if err := r.syncCbTransToTotal(queryCtx, tx, docNo, req.NewDocNo, newTotalFloat, cbTransSyncDocumentContext{
+		DocDate:       before.DocDate,
+		DocTime:       before.DocTime,
+		CustomerCode:  req.CustomerCode,
+		DocFormatCode: req.DocFormatCode,
+		InquiryType:   req.InquiryType,
+	}); err != nil {
 		return model.DocumentChangePreview{}, err
 	}
 
@@ -624,6 +660,12 @@ func (r *DocumentRepository) ApplyChangeWithSnapshot(ctx context.Context, docNo 
 		VatType:         req.VatType,
 		Remark:          req.Remark,
 		RemoveItemCodes: req.RemoveItemCodes,
+		PerDocEdits: []model.DocEdit{{
+			DocNo:        docNo,
+			AddedLines:   req.AddedLines,
+			LineEdits:    req.LineEdits,
+			LineQtyEdits: req.LineQtyEdits,
+		}},
 	}
 	bulkPreview := model.BulkDocumentChangeResult{
 		Items: []model.BulkDocumentChangeItem{{
@@ -633,6 +675,8 @@ func (r *DocumentRepository) ApplyChangeWithSnapshot(ctx context.Context, docNo 
 			Message:    "พร้อมบันทึก",
 			Preview:    &preview,
 			RemoveHits: preview.RemoveItemCodes,
+			AddedLines: req.AddedLines,
+			LineEdits:  req.LineEdits,
 		}},
 		TotalCount: 1,
 		ReadyCount: 1,
@@ -646,7 +690,7 @@ func (r *DocumentRepository) ApplyChangeWithSnapshot(ctx context.Context, docNo 
 			DocNo:    docNo,
 			NewDocNo: req.NewDocNo,
 			Status:   "failed",
-			Message:  err.Error(),
+			Message:  userFacingBatchItemError(err),
 		})
 		_ = r.finishReflowBatch(ctx, batchID, model.BulkDocumentChangeResult{TotalCount: 1, FailedCount: 1})
 		return model.DocumentChangePreview{}, err
@@ -660,7 +704,7 @@ func (r *DocumentRepository) ApplyChangeWithSnapshot(ctx context.Context, docNo 
 			DocNo:    docNo,
 			NewDocNo: req.NewDocNo,
 			Status:   "failed",
-			Message:  err.Error(),
+			Message:  userFacingBatchItemError(err),
 		})
 		_ = r.finishReflowBatch(ctx, batchID, model.BulkDocumentChangeResult{TotalCount: 1, FailedCount: 1})
 		return model.DocumentChangePreview{}, err
@@ -671,7 +715,7 @@ func (r *DocumentRepository) ApplyChangeWithSnapshot(ctx context.Context, docNo 
 			DocNo:    docNo,
 			NewDocNo: req.NewDocNo,
 			Status:   "failed",
-			Message:  err.Error(),
+			Message:  userFacingBatchItemError(err),
 		})
 		_ = r.finishReflowBatch(ctx, batchID, model.BulkDocumentChangeResult{TotalCount: 1, FailedCount: 1})
 		return model.DocumentChangePreview{}, err
@@ -721,6 +765,29 @@ func (r *DocumentRepository) BulkPreviewChange(ctx context.Context, req model.Bu
 		return model.BulkDocumentChangeResult{}, err
 	}
 
+	existingSourceCustomerCodes := map[string]struct{}{}
+	if req.CustomerCode == "" {
+		sourceCustomerCodes := make([]string, 0, len(summaries))
+		seenSourceCustomer := make(map[string]struct{}, len(summaries))
+		for _, summary := range summaries {
+			code := strings.TrimSpace(summary.CustomerCode)
+			if code == "" {
+				continue
+			}
+			if _, ok := seenSourceCustomer[code]; ok {
+				continue
+			}
+			seenSourceCustomer[code] = struct{}{}
+			sourceCustomerCodes = append(sourceCustomerCodes, code)
+		}
+		stepCtx, cancel = withStepTimeout()
+		existingSourceCustomerCodes, err = r.existingCustomerCodeSet(stepCtx, r.pool, sourceCustomerCodes)
+		cancel()
+		if err != nil {
+			return model.BulkDocumentChangeResult{}, err
+		}
+	}
+
 	// New doc numbers are allocated only when the user picked a new format.
 	// Otherwise each bill keeps its existing doc_no.
 	// DocNoOverrides lets the frontend supply a specific new doc_no for a bill
@@ -728,17 +795,16 @@ func (r *DocumentRepository) BulkPreviewChange(ctx context.Context, req model.Bu
 	// full sequence from scratch).
 	nextDocNos := make([]string, len(req.DocNos))
 	if req.DocFormatCode != "" {
-		// Count how many bills still need auto-allocation (no override provided).
-		needAlloc := 0
+		sourceDates := make([]time.Time, 0, len(req.DocNos))
 		for _, docNo := range req.DocNos {
 			if req.DocNoOverrides[docNo] == "" {
-				needAlloc++
+				sourceDates = append(sourceDates, summaries[docNo].DocDate)
 			}
 		}
 		var allocated []string
-		if needAlloc > 0 {
+		if len(sourceDates) > 0 {
 			stepCtx, cancel = withStepTimeout()
-			allocated, err = r.nextDocNoSequence(stepCtx, req.DocFormatCode, needAlloc)
+			allocated, err = r.nextDocNoSequence(stepCtx, req.DocFormatCode, sourceDates)
 			cancel()
 			if err != nil {
 				return model.BulkDocumentChangeResult{}, err
@@ -774,6 +840,9 @@ func (r *DocumentRepository) BulkPreviewChange(ctx context.Context, req model.Bu
 	usePerDoc := len(req.PerDocEdits) > 0
 	removeByDocNo := make(map[string][]string, len(req.DocNos))
 	addedByDocNo := make(map[string][]model.NewLineInput, len(req.DocNos))
+	lineEditsByDocNo := make(map[string][]model.LineEdit, len(req.DocNos))
+	qtyEditsByDocNo := make(map[string][]model.LineQtyEdit, len(req.DocNos))
+	remarkByDocNo := make(map[string]*string, len(req.DocNos))
 	if usePerDoc {
 		for _, edit := range req.PerDocEdits {
 			if len(edit.RemoveItemCodes) > 0 {
@@ -781,6 +850,15 @@ func (r *DocumentRepository) BulkPreviewChange(ctx context.Context, req model.Bu
 			}
 			if len(edit.AddedLines) > 0 {
 				addedByDocNo[edit.DocNo] = edit.AddedLines
+			}
+			if len(edit.LineQtyEdits) > 0 {
+				qtyEditsByDocNo[edit.DocNo] = edit.LineQtyEdits
+			}
+			if len(edit.LineEdits) > 0 {
+				lineEditsByDocNo[edit.DocNo] = edit.LineEdits
+			}
+			if edit.Remark != nil {
+				remarkByDocNo[edit.DocNo] = edit.Remark
 			}
 		}
 	}
@@ -797,6 +875,16 @@ func (r *DocumentRepository) BulkPreviewChange(ctx context.Context, req model.Bu
 	cancel()
 	if err != nil {
 		return model.BulkDocumentChangeResult{}, err
+	}
+
+	paymentsByDocNo := map[string]*model.DocumentPayment{}
+	if r.cfg.CbTransSyncEnabled {
+		stepCtx, cancel = withStepTimeout()
+		paymentsByDocNo, err = r.fetchDocumentPayments(stepCtx, r.pool, req.DocNos)
+		cancel()
+		if err != nil {
+			return model.BulkDocumentChangeResult{}, err
+		}
 	}
 
 	// VAT recalculation: when the user picked a vat_type, apply it uniformly.
@@ -873,16 +961,33 @@ func (r *DocumentRepository) BulkPreviewChange(ctx context.Context, req model.Bu
 
 		var removeHits []string
 		var addedLines []model.NewLineInput
+		var lineEdits []model.LineEdit
+		var lineQtyEdits []model.LineQtyEdit
+		var remarkOverride *string
 		if usePerDoc {
 			removeHits = removeByDocNo[docNo]
 			addedLines = addedByDocNo[docNo]
+			lineEdits = lineEditsByDocNo[docNo]
+			lineQtyEdits = qtyEditsByDocNo[docNo]
+			remarkOverride = remarkByDocNo[docNo]
 		} else {
 			removeHits = removeHitsByDocNo[docNo]
 		}
 		if removeHits == nil {
 			removeHits = []string{}
 		}
-		removed, remaining := splitPreviewDetailLines(detailsByDocNo[docNo], removeHits)
+		detailLines := detailsByDocNo[docNo]
+		if len(lineEdits) > 0 {
+			detailLines, err = applyLineEditsToLines(detailLines, lineEdits)
+			if err != nil {
+				item.Status = "blocked"
+				item.Message = userFacingBatchItemError(err)
+				result.BlockedCount++
+				result.Items = append(result.Items, item)
+				continue
+			}
+		}
+		removed, remaining := splitPreviewDetailLines(detailLines, removeHits)
 		var totals model.DocumentTotals
 		if usePerDoc {
 			// Resolve effective vat_type per bill so the Go-side totals match
@@ -908,11 +1013,19 @@ func (r *DocumentRepository) BulkPreviewChange(ctx context.Context, req model.Bu
 			Remark:          req.Remark,
 			RemoveItemCodes: removeHits,
 			AddedLines:      addedLines,
+			LineEdits:       lineEdits,
+			LineQtyEdits:    lineQtyEdits,
+		}
+		if remarkOverride != nil {
+			changeReq.Remark = *remarkOverride
 		}
 		preview := buildChangePreviewFromFetched(before, changeReq, totals, removed, remaining)
+		if remarkOverride != nil {
+			preview.After.Remark = *remarkOverride
+		}
 		if err := ensureDocumentHasLines(preview.Totals); err != nil {
 			item.Status = "blocked"
-			item.Message = err.Error()
+			item.Message = userFacingBatchItemError(err)
 			result.BlockedCount++
 			result.Items = append(result.Items, item)
 			continue
@@ -920,26 +1033,53 @@ func (r *DocumentRepository) BulkPreviewChange(ctx context.Context, req model.Bu
 
 		// Attach cb_trans payment preview (before + simulated after) so the
 		// UI can show how the apply step will rescale payment instruments.
-		// Best-effort: errors are logged-as-data via status but never block
-		// the bill — the apply step has the authoritative sync logic.
 		if r.cfg.CbTransSyncEnabled {
-			payCtx, payCancel := withStepTimeout()
-			paymentBefore, payErr := r.fetchDocumentPayment(payCtx, r.pool, docNo)
-			payCancel()
-			if payErr == nil && paymentBefore != nil {
-				after := simulateDocumentPaymentAfter(*paymentBefore, totals.TotalAmount)
+			paymentBefore := paymentsByDocNo[docNo]
+			if paymentBefore != nil {
+				after, simErr := simulateDocumentPaymentAfter(*paymentBefore, totals.TotalAmount)
+				if simErr != nil {
+					item.Status = "blocked"
+					item.Message = simErr.Error()
+					result.BlockedCount++
+					result.Items = append(result.Items, item)
+					continue
+				}
 				after.DocNo = newDocNo
 				preview.PaymentBefore = paymentBefore
 				preview.PaymentAfter = &after
+			} else if preview.After.InquiryType == 1 {
+				paymentAfter, simErr := newCashDocumentPayment(newDocNo, totals.TotalAmount)
+				if simErr != nil {
+					item.Status = "blocked"
+					item.Message = simErr.Error()
+					result.BlockedCount++
+					result.Items = append(result.Items, item)
+					continue
+				}
+				preview.PaymentAfter = paymentAfter
 			}
 		}
 
 		item.Preview = &preview
 		item.RemoveHits = removeHits
 		item.AddedLines = addedLines
+		item.LineEdits = lineEdits
+		item.LineQtyEdits = lineQtyEdits
+		warnings := make([]string, 0, 2)
+		if req.CustomerCode == "" {
+			sourceCustomerCode := strings.TrimSpace(before.CustomerCode)
+			if sourceCustomerCode != "" {
+				if _, ok := existingSourceCustomerCodes[sourceCustomerCode]; !ok {
+					warnings = append(warnings, fmt.Sprintf("ไม่พบข้อมูลลูกหนี้ %s ในแฟ้มลูกหนี้ ระบบจะใช้รหัสลูกหนี้เดิมจากเอกสารและยังส่งเข้า SML ได้", sourceCustomerCode))
+				}
+			}
+		}
 		if !usePerDoc && len(req.RemoveItemCodes) > 0 && len(removeHits) == 0 {
+			warnings = append(warnings, "ไม่พบสินค้าที่เลือกในบิลนี้ จะเปลี่ยนข้อมูลหัวบิลเท่านั้น")
+		}
+		if len(warnings) > 0 {
 			item.Status = "warning"
-			item.Message = "ไม่พบสินค้าที่เลือกในบิลนี้ จะเปลี่ยนข้อมูลหัวบิลเท่านั้น"
+			item.Message = strings.Join(warnings, " / ")
 			result.WarningCount++
 		} else {
 			item.Status = "ready"
@@ -975,7 +1115,7 @@ func (r *DocumentRepository) BulkApplyChange(ctx context.Context, req model.Bulk
 		}
 		if err := r.acquireDocumentLock(ctx, batchID, item.DocNo, userCode); err != nil {
 			item.Status = "failed"
-			item.Message = err.Error()
+			item.Message = userFacingBatchItemError(err)
 			item.Preview = nil
 			result.FailedCount++
 			_ = r.insertReflowBatchItem(ctx, batchID, *item)
@@ -983,7 +1123,7 @@ func (r *DocumentRepository) BulkApplyChange(ctx context.Context, req model.Bulk
 		}
 		if err := r.createDocumentSnapshot(ctx, batchID, item.DocNo, userCode); err != nil {
 			item.Status = "failed"
-			item.Message = err.Error()
+			item.Message = userFacingBatchItemError(err)
 			item.Preview = nil
 			result.FailedCount++
 			_ = r.releaseDocumentLock(ctx, item.DocNo)
@@ -1004,11 +1144,13 @@ func (r *DocumentRepository) BulkApplyChange(ctx context.Context, req model.Bulk
 			Remark:          after.Remark,
 			RemoveItemCodes: item.RemoveHits,
 			AddedLines:      item.AddedLines,
+			LineEdits:       item.LineEdits,
+			LineQtyEdits:    item.LineQtyEdits,
 		}
 		applied, err := r.ApplyChange(ctx, item.DocNo, changeReq)
 		if err != nil {
 			item.Status = "failed"
-			item.Message = err.Error()
+			item.Message = userFacingBatchItemError(err)
 			item.Preview = nil
 			result.FailedCount++
 			_ = r.releaseDocumentLock(ctx, item.DocNo)
@@ -1032,6 +1174,147 @@ func (r *DocumentRepository) BulkApplyChange(ctx context.Context, req model.Bulk
 	return result, nil
 }
 
+func (r *DocumentRepository) StartBulkApplyChange(ctx context.Context, req model.BulkDocumentChangeRequest, userCode string) (model.BulkApplyBatchProgress, error) {
+	previewResult, err := r.BulkPreviewChange(ctx, req)
+	if err != nil {
+		return model.BulkApplyBatchProgress{}, err
+	}
+
+	batchID, batchNo, err := r.createReflowBatch(ctx, userCode, req, previewResult)
+	if err != nil {
+		return model.BulkApplyBatchProgress{}, err
+	}
+	previewResult.BatchID = batchID
+	previewResult.BatchNo = batchNo
+	if err := r.insertPendingReflowBatchItems(ctx, batchID, previewResult.Items); err != nil {
+		_ = r.finishReflowBatch(ctx, batchID, model.BulkDocumentChangeResult{TotalCount: previewResult.TotalCount, FailedCount: previewResult.TotalCount})
+		return model.BulkApplyBatchProgress{}, err
+	}
+	_ = r.refreshReflowBatchCounts(ctx, batchID)
+
+	go r.runPreparedBulkApply(context.Background(), batchID, previewResult, userCode)
+
+	progress, err := r.BulkApplyBatchProgress(ctx, batchID)
+	if err != nil {
+		return model.BulkApplyBatchProgress{}, err
+	}
+	return progress, nil
+}
+
+func (r *DocumentRepository) RetryFailedBulkApplyChange(ctx context.Context, batchID int64, userCode string) (model.BulkApplyBatchProgress, error) {
+	status, req, err := r.loadReflowBatchRequest(ctx, batchID)
+	if err != nil {
+		return model.BulkApplyBatchProgress{}, err
+	}
+	if status == "processing" || status == "pending" {
+		return model.BulkApplyBatchProgress{}, fmt.Errorf("batch is still processing")
+	}
+	docNos, err := r.retriableBatchDocNos(ctx, batchID)
+	if err != nil {
+		return model.BulkApplyBatchProgress{}, err
+	}
+	if len(docNos) == 0 {
+		return model.BulkApplyBatchProgress{}, fmt.Errorf("no failed documents to retry")
+	}
+	req = retryBulkRequestForDocNos(req, docNos)
+	return r.StartBulkApplyChange(ctx, req, userCode)
+}
+
+func retryBulkRequestForDocNos(req model.BulkDocumentChangeRequest, docNos []string) model.BulkDocumentChangeRequest {
+	retrySet := make(map[string]struct{}, len(docNos))
+	for _, docNo := range docNos {
+		retrySet[docNo] = struct{}{}
+	}
+	req.DocNos = docNos
+	req.DocNoOverrides = nil
+	if len(req.PerDocEdits) > 0 {
+		edits := make([]model.DocEdit, 0, len(req.PerDocEdits))
+		for _, edit := range req.PerDocEdits {
+			if _, ok := retrySet[edit.DocNo]; ok {
+				edits = append(edits, edit)
+			}
+		}
+		req.PerDocEdits = edits
+	}
+	return req
+}
+
+func (r *DocumentRepository) runPreparedBulkApply(ctx context.Context, batchID int64, result model.BulkDocumentChangeResult, userCode string) {
+	result.AppliedCount = 0
+	result.FailedCount = 0
+	result.SkippedCount = 0
+	for i := range result.Items {
+		item := &result.Items[i]
+		if item.Status == "blocked" || item.Preview == nil {
+			_ = r.refreshReflowBatchCounts(ctx, batchID)
+			continue
+		}
+		item.Status = "processing"
+		item.Message = "กำลังส่งเข้า SML"
+		_ = r.updateReflowBatchItem(ctx, batchID, *item)
+		_ = r.refreshReflowBatchCounts(ctx, batchID)
+
+		if err := r.acquireDocumentLock(ctx, batchID, item.DocNo, userCode); err != nil {
+			item.Status = "failed"
+			item.Message = userFacingBatchItemError(err)
+			item.Preview = nil
+			result.FailedCount++
+			_ = r.updateReflowBatchItem(ctx, batchID, *item)
+			_ = r.refreshReflowBatchCounts(ctx, batchID)
+			continue
+		}
+		if err := r.createDocumentSnapshot(ctx, batchID, item.DocNo, userCode); err != nil {
+			item.Status = "failed"
+			item.Message = userFacingBatchItemError(err)
+			item.Preview = nil
+			result.FailedCount++
+			_ = r.releaseDocumentLock(ctx, item.DocNo)
+			_ = r.updateReflowBatchItem(ctx, batchID, *item)
+			_ = r.refreshReflowBatchCounts(ctx, batchID)
+			continue
+		}
+		after := item.Preview.After
+		changeReq := model.DocumentChangeRequest{
+			DocFormatCode:   after.DocFormatCode,
+			NewDocNo:        item.NewDocNo,
+			CustomerCode:    after.CustomerCode,
+			InquiryType:     after.InquiryType,
+			VatType:         after.VatType,
+			Remark:          after.Remark,
+			RemoveItemCodes: item.RemoveHits,
+			AddedLines:      item.AddedLines,
+			LineEdits:       item.LineEdits,
+			LineQtyEdits:    item.LineQtyEdits,
+		}
+		applied, err := r.ApplyChange(ctx, item.DocNo, changeReq)
+		if err != nil {
+			item.Status = "failed"
+			item.Message = userFacingBatchItemError(err)
+			item.Preview = nil
+			result.FailedCount++
+			_ = r.releaseDocumentLock(ctx, item.DocNo)
+			_ = r.updateReflowBatchItem(ctx, batchID, *item)
+			if isDuplicateDocumentNumberError(err) {
+				result.SkippedCount += r.skipRemainingPreparedBulkItems(ctx, batchID, result.Items[i+1:], "หยุดบันทึกบิลที่เหลือ เพราะเลขบิลใหม่ซ้ำกับ SML กรุณากดตรวจสอบใหม่เพื่อออกเลขชุดใหม่")
+				_ = r.refreshReflowBatchCounts(ctx, batchID)
+				break
+			}
+			_ = r.refreshReflowBatchCounts(ctx, batchID)
+			continue
+		}
+		item.Status = "applied"
+		item.Message = "บันทึกสำเร็จ"
+		item.Preview = &applied
+		result.AppliedCount++
+		_ = r.markSnapshotCurrentDocNo(ctx, batchID, item.DocNo, applied.After.DocNo)
+		_ = r.releaseDocumentLock(ctx, item.DocNo)
+		_ = r.releaseDocumentLock(ctx, applied.After.DocNo)
+		_ = r.updateReflowBatchItem(ctx, batchID, *item)
+		_ = r.refreshReflowBatchCounts(ctx, batchID)
+	}
+	_ = r.finishReflowBatch(ctx, batchID, result)
+}
+
 func (r *DocumentRepository) skipRemainingBulkItems(ctx context.Context, batchID int64, items []model.BulkDocumentChangeItem, message string) int {
 	skipped := 0
 	for i := range items {
@@ -1044,6 +1327,22 @@ func (r *DocumentRepository) skipRemainingBulkItems(ctx context.Context, batchID
 		item.Preview = nil
 		skipped++
 		_ = r.insertReflowBatchItem(ctx, batchID, *item)
+	}
+	return skipped
+}
+
+func (r *DocumentRepository) skipRemainingPreparedBulkItems(ctx context.Context, batchID int64, items []model.BulkDocumentChangeItem, message string) int {
+	skipped := 0
+	for i := range items {
+		item := &items[i]
+		if item.Status == "blocked" {
+			continue
+		}
+		item.Status = "skipped"
+		item.Message = message
+		item.Preview = nil
+		skipped++
+		_ = r.updateReflowBatchItem(ctx, batchID, *item)
 	}
 	return skipped
 }
@@ -1098,34 +1397,35 @@ func (r *DocumentRepository) RollbackDocument(ctx context.Context, req model.Rol
 		}
 	} else {
 		if _, err := tx.Exec(queryCtx, `
-			update ic_trans_detail
-			set doc_no = $3,
-				cust_code = $4,
-				inquiry_type = $5,
-				vat_type = $6::integer,
-				tax_type = $6::smallint
-			where trans_flag = $1 and doc_no = $2
-		`, salesTransFlag, currentDocNo, originalDocNo, payload.Summary.CustomerCode, payload.Summary.InquiryType, payload.Summary.VatType); err != nil {
+		update ic_trans_detail
+		set doc_no = $3,
+			cust_code = $4,
+			inquiry_type = $5
+		where trans_flag = $1 and doc_no = $2
+	`, salesTransFlag, currentDocNo, originalDocNo, payload.Summary.CustomerCode, payload.Summary.InquiryType); err != nil {
 			return model.RollbackDocumentResult{}, fmt.Errorf("restore detail headers: %w", err)
 		}
 		if _, err := tx.Exec(queryCtx, `
 			update ic_trans
-			set doc_no = $3,
-				tax_doc_no = $3,
-				doc_format_code = $4,
-				cust_code = $5,
+			set doc_no = $3::varchar,
+				tax_doc_no = $3::varchar,
+				doc_format_code = $4::varchar,
+				cust_code = $5::varchar,
 				inquiry_type = $6,
 				vat_type = $7,
-				remark = $8,
+				remark = $8::varchar,
 				total_value = $9::numeric,
 				total_before_vat = $10::numeric,
 				total_vat_value = $11::numeric,
 				total_discount = $12::numeric,
-				total_amount = $13::numeric
-			where trans_flag = $1 and doc_no = $2
+				total_after_vat = $13::numeric,
+				total_except_vat = $14::numeric,
+				total_amount = $15::numeric
+			where trans_flag = $1 and doc_no = $2::varchar
 		`, salesTransFlag, currentDocNo, originalDocNo, payload.Summary.DocFormatCode, payload.Summary.CustomerCode,
 			payload.Summary.InquiryType, payload.Summary.VatType, payload.Summary.Remark, payload.Summary.TotalValue,
-			payload.Summary.TotalBeforeVat, payload.Summary.TotalVatValue, payload.Summary.TotalDiscount, payload.Summary.TotalAmount); err != nil {
+			payload.Summary.TotalBeforeVat, payload.Summary.TotalVatValue, payload.Summary.TotalDiscount, payload.Summary.TotalAfterVat,
+			payload.Summary.TotalExceptVat, payload.Summary.TotalAmount); err != nil {
 			return model.RollbackDocumentResult{}, fmt.Errorf("restore document header: %w", err)
 		}
 	}
@@ -1133,6 +1433,12 @@ func (r *DocumentRepository) RollbackDocument(ctx context.Context, req model.Rol
 	// Snapshots created before this feature shipped won't carry the raw
 	// payload; in that case we leave cb_trans untouched (legacy behaviour).
 	if err := r.restoreCbTransFromSnapshot(queryCtx, tx, currentDocNo, originalDocNo, payload); err != nil {
+		return model.RollbackDocumentResult{}, err
+	}
+	if err := restoreCbChqListFromSnapshot(queryCtx, tx, currentDocNo, originalDocNo, payload); err != nil {
+		return model.RollbackDocumentResult{}, err
+	}
+	if err := r.restoreVatSaleJournalFromSnapshot(queryCtx, tx, currentDocNo, originalDocNo, payload); err != nil {
 		return model.RollbackDocumentResult{}, err
 	}
 	if _, err := tx.Exec(queryCtx, `
@@ -1166,6 +1472,12 @@ type documentSnapshotPayload struct {
 	// CbTransDetailsRaw is the array of cb_trans_detail rows (trans_flag=44)
 	// at snapshot time. Empty array when none existed.
 	CbTransDetailsRaw json.RawMessage `json:"cbTransDetailsRaw,omitempty"`
+	// CbChqListRaw captures side-table payment rows linked by doc_ref so
+	// rollback can restore rows removed by the 3881 credit-card cleanup.
+	CbChqListRaw json.RawMessage `json:"cbChqListRaw,omitempty"`
+	// VatSaleRaw captures gl_journal_vat_sale rows so rollback restores the
+	// VAT sales journal with the document.
+	VatSaleRaw json.RawMessage `json:"vatSaleRaw,omitempty"`
 }
 
 func (r *DocumentRepository) loadRollbackSnapshot(ctx context.Context, req model.RollbackDocumentRequest) (int64, string, string, documentSnapshotPayload, error) {
@@ -1271,6 +1583,190 @@ func (r *DocumentRepository) insertReflowBatchItem(ctx context.Context, batchID 
 	return nil
 }
 
+func (r *DocumentRepository) insertPendingReflowBatchItems(ctx context.Context, batchID int64, items []model.BulkDocumentChangeItem) error {
+	for i := range items {
+		item := items[i]
+		if item.Status == "ready" || item.Status == "warning" {
+			item.Status = "pending"
+			item.Message = "รอดำเนินการ"
+		}
+		if err := r.insertReflowBatchItem(ctx, batchID, item); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *DocumentRepository) updateReflowBatchItem(ctx context.Context, batchID int64, item model.BulkDocumentChangeItem) error {
+	queryCtx, cancel := context.WithTimeout(ctx, r.cfg.DBQueryTimeout)
+	defer cancel()
+
+	var beforeJSON, afterJSON, removedJSON []byte
+	if item.Preview != nil {
+		beforeJSON, _ = json.Marshal(item.Preview.Before)
+		afterJSON, _ = json.Marshal(item.Preview.After)
+		removedJSON, _ = json.Marshal(item.Preview.RemovedLines)
+	}
+	_, err := r.pool.Exec(queryCtx, `
+		update nsi_reflow_batch_items
+		set new_doc_no = $3,
+			status = $4,
+			message = $5,
+			before_data = coalesce(nullif($6, '')::jsonb, before_data),
+			after_data = coalesce(nullif($7, '')::jsonb, after_data),
+			removed_lines = coalesce(nullif($8, '')::jsonb, removed_lines),
+			updated_at = now()
+		where batch_id = $1 and doc_no = $2
+	`, batchID, item.DocNo, item.NewDocNo, item.Status, item.Message, string(beforeJSON), string(afterJSON), string(removedJSON))
+	if err != nil {
+		return fmt.Errorf("update reflow batch item: %w", err)
+	}
+	return nil
+}
+
+func (r *DocumentRepository) refreshReflowBatchCounts(ctx context.Context, batchID int64) error {
+	queryCtx, cancel := context.WithTimeout(ctx, r.cfg.DBQueryTimeout)
+	defer cancel()
+
+	_, err := r.pool.Exec(queryCtx, `
+		update nsi_reflow_batches
+		set applied_count = counts.applied_count,
+			failed_count = counts.failed_count,
+			blocked_count = counts.blocked_count,
+			updated_at = now()
+		from (
+			select
+				count(*) filter (where status = 'applied')::int as applied_count,
+				count(*) filter (where status = 'failed')::int as failed_count,
+				count(*) filter (where status = 'blocked')::int as blocked_count
+			from nsi_reflow_batch_items
+			where batch_id = $1
+		) counts
+		where id = $1
+	`, batchID)
+	if err != nil {
+		return fmt.Errorf("refresh reflow batch counts: %w", err)
+	}
+	return nil
+}
+
+func (r *DocumentRepository) BulkApplyBatchProgress(ctx context.Context, batchID int64) (model.BulkApplyBatchProgress, error) {
+	queryCtx, cancel := context.WithTimeout(ctx, r.cfg.DBQueryTimeout)
+	defer cancel()
+
+	var progress model.BulkApplyBatchProgress
+	if err := r.pool.QueryRow(queryCtx, `
+		select id, batch_no, status, total_count, ready_count, warning_count, blocked_count, applied_count, failed_count
+		from nsi_reflow_batches
+		where id = $1
+	`, batchID).Scan(
+		&progress.BatchID,
+		&progress.BatchNo,
+		&progress.Status,
+		&progress.TotalCount,
+		&progress.ReadyCount,
+		&progress.WarningCount,
+		&progress.BlockedCount,
+		&progress.AppliedCount,
+		&progress.FailedCount,
+	); err != nil {
+		return model.BulkApplyBatchProgress{}, fmt.Errorf("load reflow batch: %w", err)
+	}
+	rows, err := r.pool.Query(queryCtx, `
+		select doc_no, new_doc_no, status, message, before_data, after_data, removed_lines
+		from nsi_reflow_batch_items
+		where batch_id = $1
+		order by id
+	`, batchID)
+	if err != nil {
+		return model.BulkApplyBatchProgress{}, fmt.Errorf("query reflow batch items: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var item model.BulkDocumentChangeItem
+		var beforeRaw, afterRaw, removedRaw []byte
+		if err := rows.Scan(&item.DocNo, &item.NewDocNo, &item.Status, &item.Message, &beforeRaw, &afterRaw, &removedRaw); err != nil {
+			return model.BulkApplyBatchProgress{}, fmt.Errorf("scan reflow batch item: %w", err)
+		}
+		if len(beforeRaw) > 0 || len(afterRaw) > 0 || len(removedRaw) > 0 {
+			preview := model.DocumentChangePreview{DocNo: item.DocNo}
+			if len(beforeRaw) > 0 {
+				_ = json.Unmarshal(beforeRaw, &preview.Before)
+			}
+			if len(afterRaw) > 0 {
+				_ = json.Unmarshal(afterRaw, &preview.After)
+				preview.DocNo = preview.After.DocNo
+			}
+			if len(removedRaw) > 0 {
+				_ = json.Unmarshal(removedRaw, &preview.RemovedLines)
+			}
+			item.Preview = &preview
+		}
+		switch item.Status {
+		case "pending":
+			progress.PendingCount++
+		case "processing":
+			progress.ProcessingCount++
+		case "skipped":
+			progress.SkippedCount++
+		}
+		progress.Items = append(progress.Items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return model.BulkApplyBatchProgress{}, fmt.Errorf("iterate reflow batch items: %w", err)
+	}
+	return progress, nil
+}
+
+func (r *DocumentRepository) loadReflowBatchRequest(ctx context.Context, batchID int64) (string, model.BulkDocumentChangeRequest, error) {
+	queryCtx, cancel := context.WithTimeout(ctx, r.cfg.DBQueryTimeout)
+	defer cancel()
+
+	var status string
+	var raw []byte
+	if err := r.pool.QueryRow(queryCtx, `
+		select status, config
+		from nsi_reflow_batches
+		where id = $1
+	`, batchID).Scan(&status, &raw); err != nil {
+		return "", model.BulkDocumentChangeRequest{}, fmt.Errorf("load reflow batch request: %w", err)
+	}
+	var req model.BulkDocumentChangeRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return "", model.BulkDocumentChangeRequest{}, fmt.Errorf("decode reflow batch request: %w", err)
+	}
+	return status, req, nil
+}
+
+func (r *DocumentRepository) retriableBatchDocNos(ctx context.Context, batchID int64) ([]string, error) {
+	queryCtx, cancel := context.WithTimeout(ctx, r.cfg.DBQueryTimeout)
+	defer cancel()
+
+	rows, err := r.pool.Query(queryCtx, `
+		select doc_no
+		from nsi_reflow_batch_items
+		where batch_id = $1 and status in ('failed', 'skipped')
+		order by id
+	`, batchID)
+	if err != nil {
+		return nil, fmt.Errorf("query retriable batch documents: %w", err)
+	}
+	defer rows.Close()
+	docNos := make([]string, 0)
+	for rows.Next() {
+		var docNo string
+		if err := rows.Scan(&docNo); err != nil {
+			return nil, fmt.Errorf("scan retriable batch document: %w", err)
+		}
+		docNos = append(docNos, docNo)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate retriable batch documents: %w", err)
+	}
+	return docNos, nil
+}
+
 func (r *DocumentRepository) acquireDocumentLock(ctx context.Context, batchID int64, docNo, userCode string) error {
 	queryCtx, cancel := context.WithTimeout(ctx, r.cfg.DBQueryTimeout)
 	defer cancel()
@@ -1354,6 +1850,14 @@ func (r *DocumentRepository) createDocumentSnapshot(ctx context.Context, batchID
 	`, salesTransFlag, docNo).Scan(&cbTransDetailsRaw); err != nil {
 		return fmt.Errorf("snapshot cb_trans_detail: %w", err)
 	}
+	cbChqListRaw, err := marshalCbChqListSnapshot(queryCtx, r.pool, docNo)
+	if err != nil {
+		return err
+	}
+	vatSaleRaw, err := marshalVatSaleSnapshot(queryCtx, r.pool, docNo)
+	if err != nil {
+		return err
+	}
 	payload := map[string]any{
 		"summary":           summary,
 		"details":           details,
@@ -1361,6 +1865,8 @@ func (r *DocumentRepository) createDocumentSnapshot(ctx context.Context, batchID
 		"detailsRaw":        detailsRaw,
 		"cbTransRaw":        cbTransRaw,
 		"cbTransDetailsRaw": cbTransDetailsRaw,
+		"cbChqListRaw":      cbChqListRaw,
+		"vatSaleRaw":        vatSaleRaw,
 	}
 	snapshotJSON, _ := json.Marshal(payload)
 	if _, err := r.pool.Exec(queryCtx, `
@@ -1442,7 +1948,7 @@ func (r *DocumentRepository) DocFormats(ctx context.Context) ([]model.DocFormat,
 	return items, rows.Err()
 }
 
-func (r *DocumentRepository) NextDocNo(ctx context.Context, formatCode string) (string, string, error) {
+func (r *DocumentRepository) NextDocNo(ctx context.Context, formatCode string, sourceDocNo ...string) (string, string, error) {
 	queryCtx, cancel := context.WithTimeout(ctx, r.cfg.DBQueryTimeout)
 	defer cancel()
 
@@ -1455,17 +1961,23 @@ func (r *DocumentRepository) NextDocNo(ctx context.Context, formatCode string) (
 		return "", "", fmt.Errorf("read doc format: %w", err)
 	}
 
-	var latest string
-	_ = r.pool.QueryRow(queryCtx, `
-		select coalesce(doc_no, '')
-		from ic_trans
-		where trans_flag = $1
-			and doc_format_code = $2
-		order by doc_no desc
-		limit 1
-	`, salesTransFlag, formatCode).Scan(&latest)
-
-	return previewNextDocNo(formatCode, docFormat, latest, time.Now()), latest, nil
+	sourceDate := time.Now()
+	if len(sourceDocNo) > 0 && strings.TrimSpace(sourceDocNo[0]) != "" {
+		source, err := r.getSummary(queryCtx, r.pool, strings.TrimSpace(sourceDocNo[0]))
+		if err != nil {
+			return "", "", err
+		}
+		sourceDate = source.DocDate
+	}
+	latest, err := r.latestDocumentNumberForFormatDate(queryCtx, r.pool, formatCode, docFormat, sourceDate)
+	if err != nil {
+		return "", "", err
+	}
+	next, err := r.nextAvailableDocNo(queryCtx, r.pool, formatCode, docFormat, latest, sourceDate, nil)
+	if err != nil {
+		return "", latest, err
+	}
+	return next, latest, nil
 }
 
 func (r *DocumentRepository) SearchCustomers(ctx context.Context, q string, limit int) ([]model.CustomerOption, error) {
@@ -1473,14 +1985,24 @@ func (r *DocumentRepository) SearchCustomers(ctx context.Context, q string, limi
 	defer cancel()
 
 	q = strings.TrimSpace(q)
-	pattern := q + "%"
+	containsPattern := "%" + escapeLike(q) + "%"
+	prefixPattern := escapeLike(q) + "%"
 	rows, err := r.pool.Query(queryCtx, `
 		select code, coalesce(name_1, '')
 		from ar_customer
-		where ($1 = '' or code ilike $2 or name_1 ilike $2)
-		order by code
-		limit $3
-	`, q, pattern, limit)
+		where ($1 = '' or code ilike $2 escape '\' or name_1 ilike $2 escape '\')
+		order by
+			case
+				when $1 = '' then 3
+				when code = $1 then 0
+				when name_1 = $1 then 0
+				when code ilike $3 escape '\' then 1
+				when name_1 ilike $3 escape '\' then 1
+				else 2
+			end,
+			code
+		limit $4
+	`, q, containsPattern, prefixPattern, limit)
 	if err != nil {
 		return nil, fmt.Errorf("query customers: %w", err)
 	}
@@ -1629,7 +2151,93 @@ func normalizeChangeRequest(req model.DocumentChangeRequest) model.DocumentChang
 		codes = append(codes, code)
 	}
 	req.RemoveItemCodes = codes
+	req.LineQtyEdits = normalizeLineQtyEdits(req.LineQtyEdits)
+	req.LineEdits = normalizeLineEdits(append(lineEditsFromQtyEdits(req.LineQtyEdits), req.LineEdits...))
 	return req
+}
+
+func normalizeLineQtyEdits(edits []model.LineQtyEdit) []model.LineQtyEdit {
+	if len(edits) == 0 {
+		return nil
+	}
+	seen := make(map[int64]int, len(edits))
+	normalized := make([]model.LineQtyEdit, 0, len(edits))
+	for _, edit := range edits {
+		edit.Qty = strings.TrimSpace(edit.Qty)
+		if edit.RowOrder <= 0 || edit.Qty == "" {
+			continue
+		}
+		if idx, ok := seen[edit.RowOrder]; ok {
+			normalized[idx] = edit
+			continue
+		}
+		seen[edit.RowOrder] = len(normalized)
+		normalized = append(normalized, edit)
+	}
+	return normalized
+}
+
+func lineEditsFromQtyEdits(edits []model.LineQtyEdit) []model.LineEdit {
+	if len(edits) == 0 {
+		return nil
+	}
+	out := make([]model.LineEdit, 0, len(edits))
+	for _, edit := range edits {
+		qty := strings.TrimSpace(edit.Qty)
+		if edit.RowOrder <= 0 || qty == "" {
+			continue
+		}
+		q := qty
+		out = append(out, model.LineEdit{RowOrder: edit.RowOrder, Qty: &q})
+	}
+	return out
+}
+
+func normalizeLineEdits(edits []model.LineEdit) []model.LineEdit {
+	if len(edits) == 0 {
+		return nil
+	}
+	seen := make(map[int64]int, len(edits))
+	normalized := make([]model.LineEdit, 0, len(edits))
+	for _, edit := range edits {
+		if edit.RowOrder <= 0 {
+			continue
+		}
+		edit.Qty = normalizeOptionalLineEditValue(edit.Qty, false)
+		edit.Price = normalizeOptionalLineEditValue(edit.Price, false)
+		edit.Discount = normalizeOptionalLineEditValue(edit.Discount, true)
+		if edit.Qty == nil && edit.Price == nil && edit.Discount == nil {
+			continue
+		}
+		if idx, ok := seen[edit.RowOrder]; ok {
+			prev := normalized[idx]
+			if edit.Qty != nil {
+				prev.Qty = edit.Qty
+			}
+			if edit.Price != nil {
+				prev.Price = edit.Price
+			}
+			if edit.Discount != nil {
+				prev.Discount = edit.Discount
+			}
+			normalized[idx] = prev
+			continue
+		}
+		seen[edit.RowOrder] = len(normalized)
+		normalized = append(normalized, edit)
+	}
+	return normalized
+}
+
+func normalizeOptionalLineEditValue(value *string, keepEmpty bool) *string {
+	if value == nil {
+		return nil
+	}
+	trimmed := strings.TrimSpace(*value)
+	if trimmed == "" && !keepEmpty {
+		return nil
+	}
+	return &trimmed
 }
 
 func normalizeBulkChangeRequest(req model.BulkDocumentChangeRequest) model.BulkDocumentChangeRequest {
@@ -1711,8 +2319,14 @@ func normalizeBulkChangeRequest(req model.BulkDocumentChangeRequest) model.BulkD
 				added = append(added, line)
 			}
 			edit.AddedLines = added
+			edit.LineQtyEdits = normalizeLineQtyEdits(edit.LineQtyEdits)
+			edit.LineEdits = normalizeLineEdits(append(lineEditsFromQtyEdits(edit.LineQtyEdits), edit.LineEdits...))
+			if edit.Remark != nil {
+				remark := strings.TrimSpace(*edit.Remark)
+				edit.Remark = &remark
+			}
 
-			if len(edit.RemoveItemCodes) == 0 && len(edit.AddedLines) == 0 {
+			if len(edit.RemoveItemCodes) == 0 && len(edit.AddedLines) == 0 && len(edit.LineEdits) == 0 && len(edit.LineQtyEdits) == 0 && edit.Remark == nil {
 				continue
 			}
 			if idx, ok := seenEdit[edit.DocNo]; ok {
@@ -1720,6 +2334,11 @@ func normalizeBulkChangeRequest(req model.BulkDocumentChangeRequest) model.BulkD
 				prev := normalized[idx]
 				prev.RemoveItemCodes = append(prev.RemoveItemCodes, edit.RemoveItemCodes...)
 				prev.AddedLines = append(prev.AddedLines, edit.AddedLines...)
+				prev.LineQtyEdits = normalizeLineQtyEdits(append(prev.LineQtyEdits, edit.LineQtyEdits...))
+				prev.LineEdits = normalizeLineEdits(append(prev.LineEdits, edit.LineEdits...))
+				if edit.Remark != nil {
+					prev.Remark = edit.Remark
+				}
 				normalized[idx] = prev
 				continue
 			}
@@ -1736,12 +2355,12 @@ func normalizeBulkChangeRequest(req model.BulkDocumentChangeRequest) model.BulkD
 	return req
 }
 
-func (r *DocumentRepository) nextDocNoSequence(ctx context.Context, formatCode string, count int) ([]string, error) {
+func (r *DocumentRepository) nextDocNoSequence(ctx context.Context, formatCode string, sourceDates []time.Time) ([]string, error) {
 	formatCode = strings.TrimSpace(formatCode)
 	if formatCode == "" {
 		return nil, fmt.Errorf("doc format is required")
 	}
-	if count <= 0 {
+	if len(sourceDates) == 0 {
 		return nil, nil
 	}
 
@@ -1757,26 +2376,89 @@ func (r *DocumentRepository) nextDocNoSequence(ctx context.Context, formatCode s
 		return nil, fmt.Errorf("doc format is empty")
 	}
 
+	items := make([]string, 0, len(sourceDates))
+	reserved := make(map[string]struct{}, len(sourceDates))
+	for _, sourceDate := range sourceDates {
+		if sourceDate.IsZero() {
+			sourceDate = time.Now()
+		}
+		latest, err := r.latestDocumentNumberForFormatDate(ctx, r.pool, formatCode, docFormat, sourceDate)
+		if err != nil {
+			return nil, err
+		}
+		next, err := r.nextAvailableDocNo(ctx, r.pool, formatCode, docFormat, latest, sourceDate, reserved)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, next)
+		reserved[next] = struct{}{}
+	}
+	return items, nil
+}
+
+func (r *DocumentRepository) latestDocumentNumberForFormatDate(ctx context.Context, q documentQuerier, formatCode, docFormat string, sourceDate time.Time) (string, error) {
+	prefix, hashCount := renderedDocNoPrefix(formatCode, docFormat, sourceDate)
+	if hashCount == 0 {
+		return "", nil
+	}
 	var latest string
-	_ = r.pool.QueryRow(ctx, `
+	err := q.QueryRow(ctx, `
 		select coalesce(doc_no, '')
 		from ic_trans
 		where trans_flag = $1
 			and doc_format_code = $2
-		order by doc_no desc
+			and doc_no like $3 escape E'\\'
+			and length(doc_no) = $4
+			and right(doc_no, $5) ~ '^[0-9]+$'
+		order by (right(doc_no, $5))::int desc
 		limit 1
-	`, salesTransFlag, formatCode).Scan(&latest)
-
-	items := make([]string, 0, count)
-	for len(items) < count {
-		next := previewNextDocNo(formatCode, docFormat, latest, time.Now())
-		if next == "" {
-			return nil, fmt.Errorf("cannot preview next document number")
+	`, salesTransFlag, formatCode, escapeLike(prefix)+"%", len(prefix)+hashCount, hashCount).Scan(&latest)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", nil
 		}
-		items = append(items, next)
-		latest = next
+		return "", fmt.Errorf("read latest document number: %w", err)
 	}
-	return items, nil
+	return latest, nil
+}
+
+func (r *DocumentRepository) nextAvailableDocNo(ctx context.Context, q documentQuerier, formatCode, docFormat, latest string, now time.Time, reserved map[string]struct{}) (string, error) {
+	last := latest
+	for attempts := 0; attempts < 10000; attempts++ {
+		next := previewNextDocNo(formatCode, docFormat, last, now)
+		if next == "" {
+			return "", fmt.Errorf("cannot preview next document number")
+		}
+		if _, exists := reserved[next]; exists {
+			if next == last {
+				return "", fmt.Errorf("cannot allocate unique document number")
+			}
+			last = next
+			continue
+		}
+		exists, err := r.documentNumberExists(ctx, q, next)
+		if err != nil {
+			return "", err
+		}
+		if !exists {
+			return next, nil
+		}
+		if next == last {
+			return "", fmt.Errorf("cannot allocate unique document number")
+		}
+		last = next
+	}
+	return "", fmt.Errorf("cannot allocate unique document number after 10000 attempts")
+}
+
+func (r *DocumentRepository) documentNumberExists(ctx context.Context, q documentQuerier, docNo string) (bool, error) {
+	var exists bool
+	if err := q.QueryRow(ctx, `
+		select exists(select 1 from ic_trans where trans_flag = $1 and doc_no = $2)
+	`, salesTransFlag, docNo).Scan(&exists); err != nil {
+		return false, fmt.Errorf("check document number: %w", err)
+	}
+	return exists, nil
 }
 
 func (r *DocumentRepository) existingRemoveCodes(ctx context.Context, q documentQuerier, docNo string, requested []string) ([]string, error) {
@@ -1814,20 +2496,26 @@ func (r *DocumentRepository) validateBulkChangeBase(ctx context.Context, q docum
 	// Bulk-edit semantics: every header field is optional. Sentinels mean
 	// "keep each bill's existing value":
 	//   DocFormatCode "", CustomerCode "", Remark ""  → keep
-	//   InquiryType 0                                  → keep (valid 1..4)
+	//   InquiryType -1                                 → keep (valid 0..3)
 	//   VatType -1                                     → keep (valid 0..3)
 	// At least one field (or RemoveItemCodes) must carry a change.
 	hasChange := req.DocFormatCode != "" ||
 		req.CustomerCode != "" ||
-		req.InquiryType != 0 ||
+		req.InquiryType != -1 ||
 		req.VatType != -1 ||
 		req.Remark != "" ||
 		len(req.RemoveItemCodes) > 0
-	if !hasChange {
+	for _, edit := range req.PerDocEdits {
+		if len(edit.RemoveItemCodes) > 0 || len(edit.AddedLines) > 0 || len(edit.LineEdits) > 0 || len(edit.LineQtyEdits) > 0 || edit.Remark != nil {
+			hasChange = true
+			break
+		}
+	}
+	if !hasChange && len(req.DocNos) == 0 {
 		return fmt.Errorf("no changes specified")
 	}
 
-	if req.InquiryType != 0 && (req.InquiryType < 1 || req.InquiryType > 4) {
+	if req.InquiryType != -1 && (req.InquiryType < 0 || req.InquiryType > 3) {
 		return fmt.Errorf("sale type is invalid")
 	}
 	if req.VatType != -1 && (req.VatType < 0 || req.VatType > 3) {
@@ -1913,6 +2601,34 @@ func (r *DocumentRepository) existingDocumentNumberSet(ctx context.Context, q do
 	return items, nil
 }
 
+func (r *DocumentRepository) existingCustomerCodeSet(ctx context.Context, q documentQuerier, customerCodes []string) (map[string]struct{}, error) {
+	items := make(map[string]struct{}, len(customerCodes))
+	if len(customerCodes) == 0 {
+		return items, nil
+	}
+	rows, err := q.Query(ctx, `
+		select code
+		from ar_customer
+		where code = any($1)
+	`, customerCodes)
+	if err != nil {
+		return nil, fmt.Errorf("check source customers: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var code string
+		if err := rows.Scan(&code); err != nil {
+			return nil, fmt.Errorf("scan source customer: %w", err)
+		}
+		items[code] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate source customers: %w", err)
+	}
+	return items, nil
+}
+
 func (r *DocumentRepository) existingRemoveCodesByDocNo(ctx context.Context, q documentQuerier, docNos []string, requested []string) (map[string][]string, error) {
 	items := make(map[string][]string, len(docNos))
 	if len(docNos) == 0 || len(requested) == 0 {
@@ -1954,8 +2670,14 @@ func (r *DocumentRepository) validateChangeRequest(ctx context.Context, q docume
 	if req.CustomerCode == "" {
 		return fmt.Errorf("customer is required")
 	}
-	if req.InquiryType < 1 || req.InquiryType > 4 {
-		return fmt.Errorf("sale type is invalid")
+	if req.InquiryType < 0 || req.InquiryType > 3 {
+		preservingExistingInquiryType, err := r.isExistingInquiryType(ctx, q, docNo, req.InquiryType)
+		if err != nil {
+			return err
+		}
+		if !preservingExistingInquiryType {
+			return fmt.Errorf("sale type is invalid")
+		}
 	}
 	if req.VatType < 0 || req.VatType > 3 {
 		return fmt.Errorf("tax type is invalid")
@@ -1975,7 +2697,13 @@ func (r *DocumentRepository) validateChangeRequest(ctx context.Context, q docume
 		return fmt.Errorf("validate customer: %w", err)
 	}
 	if !exists {
-		return fmt.Errorf("customer not found")
+		preservingExistingCustomer, err := r.isExistingCustomerCode(ctx, q, docNo, req.CustomerCode)
+		if err != nil {
+			return err
+		}
+		if !preservingExistingCustomer {
+			return fmt.Errorf("customer not found")
+		}
 	}
 	if req.NewDocNo != docNo {
 		if err := q.QueryRow(ctx, `
@@ -2015,24 +2743,146 @@ func (r *DocumentRepository) validateChangeRequest(ctx context.Context, q docume
 			return fmt.Errorf("remove item not found in sales details: %s", strings.Join(missing, ", "))
 		}
 	}
+	if err := validateLineEdits(ctx, q, docNo, req.LineEdits); err != nil {
+		return err
+	}
 	return nil
 }
 
+func validateLineEdits(ctx context.Context, q documentQuerier, docNo string, edits []model.LineEdit) error {
+	if len(edits) == 0 {
+		return nil
+	}
+	rowOrders := make([]int64, 0, len(edits))
+	for _, edit := range edits {
+		if edit.Qty != nil {
+			qty, err := parseQtyInput(*edit.Qty)
+			if err != nil {
+				return fmt.Errorf("invalid qty for row %d", edit.RowOrder)
+			}
+			if qty != float64(int64(qty)) {
+				return fmt.Errorf("invalid qty for row %d", edit.RowOrder)
+			}
+		}
+		if edit.Price != nil {
+			if _, err := parsePriceInput(*edit.Price); err != nil {
+				return fmt.Errorf("invalid price for row %d", edit.RowOrder)
+			}
+		}
+		rowOrders = append(rowOrders, edit.RowOrder)
+	}
+	rows, err := q.Query(ctx, `
+		select unnest($1::bigint[])
+		except
+		select roworder
+		from ic_trans_detail
+		where trans_flag = $2
+			and doc_no = $3
+	`, rowOrders, salesTransFlag, docNo)
+	if err != nil {
+		return fmt.Errorf("validate qty edit rows: %w", err)
+	}
+	defer rows.Close()
+	missing := make([]string, 0)
+	for rows.Next() {
+		var rowOrder int64
+		if err := rows.Scan(&rowOrder); err != nil {
+			return fmt.Errorf("scan missing qty edit row: %w", err)
+		}
+		missing = append(missing, strconv.FormatInt(rowOrder, 10))
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate missing qty edit rows: %w", err)
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("line edit row not found in sales details: %s", strings.Join(missing, ", "))
+	}
+	lines, err := fetchDetailLines(ctx, q, docNo)
+	if err != nil {
+		return err
+	}
+	if _, err := applyLineEditsToLines(lines, edits); err != nil {
+		return err
+	}
+	return nil
+}
+
+func fetchDetailLines(ctx context.Context, q documentQuerier, docNo string) ([]model.DocumentDetailLine, error) {
+	rows, err := q.Query(ctx, `
+		select
+			doc_no,
+			roworder,
+			coalesce(line_number, 0),
+			coalesce(item_code, ''),
+			coalesce(item_name, ''),
+			coalesce(barcode, ''),
+			coalesce(wh_code, ''),
+			coalesce(shelf_code, ''),
+			coalesce(unit_code, ''),
+			coalesce(qty, 0)::text,
+			coalesce(price, 0)::text,
+			coalesce(discount, ''),
+			coalesce(sum_amount, 0)::text,
+			coalesce(total_vat_value, 0)::text,
+			coalesce(sum_amount_exclude_vat, 0)::text,
+			coalesce(vat_type, 0),
+			coalesce(tax_type, 0)
+		from ic_trans_detail
+		where trans_flag = $1 and doc_no = $2
+		order by line_number, roworder
+		limit 500
+	`, salesTransFlag, docNo)
+	if err != nil {
+		return nil, fmt.Errorf("query document detail lines: %w", err)
+	}
+	defer rows.Close()
+	return scanDetailLines(rows)
+}
+
+func (r *DocumentRepository) isExistingInquiryType(ctx context.Context, q documentQuerier, docNo string, inquiryType int16) (bool, error) {
+	var current int16
+	if err := q.QueryRow(ctx, `
+		select coalesce(inquiry_type, 0)::smallint
+		from ic_trans
+		where trans_flag = $1 and doc_no = $2
+		limit 1
+	`, salesTransFlag, docNo).Scan(&current); err != nil {
+		return false, fmt.Errorf("validate current sale type: %w", err)
+	}
+	return current == inquiryType, nil
+}
+
+func (r *DocumentRepository) isExistingCustomerCode(ctx context.Context, q documentQuerier, docNo string, customerCode string) (bool, error) {
+	var current string
+	if err := q.QueryRow(ctx, `
+		select coalesce(cust_code, '')::text
+		from ic_trans
+		where trans_flag = $1 and doc_no = $2
+		limit 1
+	`, salesTransFlag, docNo).Scan(&current); err != nil {
+		return false, fmt.Errorf("validate current customer: %w", err)
+	}
+	return strings.TrimSpace(current) == strings.TrimSpace(customerCode), nil
+}
+
 func (r *DocumentRepository) buildChangePreview(ctx context.Context, q documentQuerier, before model.DocumentSummary, req model.DocumentChangeRequest) (model.DocumentChangePreview, error) {
-	removed, err := r.detailLines(ctx, q, before.DocNo, req.RemoveItemCodes, true)
+	lines, err := r.detailLines(ctx, q, before.DocNo, nil, false)
 	if err != nil {
 		return model.DocumentChangePreview{}, err
 	}
-	remaining, err := r.detailLines(ctx, q, before.DocNo, req.RemoveItemCodes, false)
-	if err != nil {
-		return model.DocumentChangePreview{}, err
+	if len(req.LineEdits) > 0 {
+		lines, err = applyLineEditsToLines(lines, req.LineEdits)
+		if err != nil {
+			return model.DocumentChangePreview{}, err
+		}
 	}
-	totals, err := r.calculateTotals(ctx, q, before.DocNo, req.RemoveItemCodes, req.VatType)
-	if err != nil {
-		return model.DocumentChangePreview{}, err
-	}
+	removed, remaining := splitPreviewDetailLines(lines, req.RemoveItemCodes)
+	totals := computeTotalsFromLines(remaining, req.AddedLines, req.VatType)
 	after := before
 	after.DocNo = req.NewDocNo
+	if req.NewDocNo != before.DocNo {
+		after.DocRef = before.DocNo
+	}
 	after.DocFormatCode = req.DocFormatCode
 	after.CustomerCode = req.CustomerCode
 	after.InquiryType = req.InquiryType
@@ -2042,6 +2892,8 @@ func (r *DocumentRepository) buildChangePreview(ctx context.Context, q documentQ
 	after.TotalBeforeVat = totals.TotalBeforeVat
 	after.TotalVatValue = totals.TotalVatValue
 	after.TotalDiscount = totals.TotalDiscount
+	after.TotalAfterVat = totals.TotalAfterVat
+	after.TotalExceptVat = totals.TotalExceptVat
 	after.TotalAmount = totals.TotalAmount
 	return model.DocumentChangePreview{
 		DocNo:           before.DocNo,
@@ -2051,12 +2903,16 @@ func (r *DocumentRepository) buildChangePreview(ctx context.Context, q documentQ
 		RemoveItemCodes: req.RemoveItemCodes,
 		RemovedLines:    removed,
 		RemainingLines:  remaining,
+		AddedLines:      req.AddedLines,
 	}, nil
 }
 
 func buildChangePreviewFromFetched(before model.DocumentSummary, req model.DocumentChangeRequest, totals model.DocumentTotals, removed []model.DocumentDetailLine, remaining []model.DocumentDetailLine) model.DocumentChangePreview {
 	after := before
 	after.DocNo = req.NewDocNo
+	if req.NewDocNo != before.DocNo {
+		after.DocRef = before.DocNo
+	}
 	// Sentinels carry "keep before". Only overwrite when the caller supplied a
 	// real value, so each bill retains its own header field where the user did
 	// not specify a change.
@@ -2066,7 +2922,7 @@ func buildChangePreviewFromFetched(before model.DocumentSummary, req model.Docum
 	if req.CustomerCode != "" {
 		after.CustomerCode = req.CustomerCode
 	}
-	if req.InquiryType != 0 {
+	if req.InquiryType != -1 {
 		after.InquiryType = req.InquiryType
 	}
 	if req.VatType != -1 {
@@ -2079,6 +2935,8 @@ func buildChangePreviewFromFetched(before model.DocumentSummary, req model.Docum
 	after.TotalBeforeVat = totals.TotalBeforeVat
 	after.TotalVatValue = totals.TotalVatValue
 	after.TotalDiscount = totals.TotalDiscount
+	after.TotalAfterVat = totals.TotalAfterVat
+	after.TotalExceptVat = totals.TotalExceptVat
 	after.TotalAmount = totals.TotalAmount
 	return model.DocumentChangePreview{
 		DocNo:           before.DocNo,
@@ -2179,31 +3037,37 @@ func (r *DocumentRepository) scanSummary(row interface{ Scan(...any) error }) (m
 	return item, nil
 }
 
-// vatTotalsSelectSQL produces (total_value, total_before_vat, total_vat_value, total_discount, total_amount, line_count)
+// vatTotalsSelectSQL produces (total_value, total_before_vat, total_vat_value, total_discount, total_after_vat, total_except_vat, total_amount, line_count)
 // by recomputing each detail row's VAT split based on the supplied vat_type.
 // Conventions:
 //   - sum_amount is treated as the line subtotal (qty*price - discount) in whichever currency was stored.
-//   - vat_type 0 = no VAT, 1 = price INCLUDES VAT, 2 = price EXCLUDES VAT (VAT added on top).
+//   - vat_type 0 = price EXCLUDES VAT, 1 = price INCLUDES VAT, 2 = zero VAT, 3 = no VAT impact.
 //   - vat_rate falls back to 7 when stored as 0/NULL.
 const vatTotalsSelectSQL = `
 	coalesce(sum(sum_amount), 0)::text,
 	coalesce(sum(case
 		when $4::integer = 0 then sum_amount
 		when $4::integer = 1 then round(sum_amount * 100.0 / (100.0 + 7), 2)
-		when $4::integer = 2 then sum_amount
+		when $4::integer in (2, 3) then 0::numeric
 		else sum_amount_exclude_vat
 	end), 0)::text,
 	coalesce(sum(case
-		when $4::integer = 0 then 0::numeric
+		when $4::integer = 0 then round(sum_amount * 7 / 100.0, 2)
 		when $4::integer = 1 then sum_amount - round(sum_amount * 100.0 / (100.0 + 7), 2)
-		when $4::integer = 2 then round(sum_amount * 7 / 100.0, 2)
+		when $4::integer in (2, 3) then 0::numeric
 		else total_vat_value
 	end), 0)::text,
 	0::numeric::text,
 	coalesce(sum(case
-		when $4::integer = 0 then sum_amount
+		when $4::integer = 0 then sum_amount + round(sum_amount * 7 / 100.0, 2)
 		when $4::integer = 1 then sum_amount
-		when $4::integer = 2 then sum_amount + round(sum_amount * 7 / 100.0, 2)
+		else 0::numeric
+	end), 0)::text,
+	0::numeric::text,
+	coalesce(sum(case
+		when $4::integer = 0 then sum_amount + round(sum_amount * 7 / 100.0, 2)
+		when $4::integer = 1 then sum_amount
+		when $4::integer in (2, 3) then sum_amount
 		else sum_amount + total_vat_value
 	end), 0)::text,
 	count(*)::bigint
@@ -2223,6 +3087,8 @@ func (r *DocumentRepository) calculateTotals(ctx context.Context, q documentQuer
 		&totals.TotalBeforeVat,
 		&totals.TotalVatValue,
 		&totals.TotalDiscount,
+		&totals.TotalAfterVat,
+		&totals.TotalExceptVat,
 		&totals.TotalAmount,
 		&totals.LineCount,
 	); err != nil {
@@ -2260,6 +3126,8 @@ func (r *DocumentRepository) calculateTotalsByDocNo(ctx context.Context, q docum
 			&totals.TotalBeforeVat,
 			&totals.TotalVatValue,
 			&totals.TotalDiscount,
+			&totals.TotalAfterVat,
+			&totals.TotalExceptVat,
 			&totals.TotalAmount,
 			&totals.LineCount,
 		); err != nil {
@@ -2281,6 +3149,7 @@ func (r *DocumentRepository) detailLines(ctx context.Context, q documentQuerier,
 	rows, err := q.Query(ctx, `
 		select
 			doc_no,
+			roworder,
 			coalesce(line_number, 0),
 			coalesce(item_code, ''),
 			coalesce(item_name, ''),
@@ -2309,12 +3178,51 @@ func (r *DocumentRepository) detailLines(ctx context.Context, q documentQuerier,
 	return scanDetailLines(rows)
 }
 
+func (r *DocumentRepository) updateLineEdits(ctx context.Context, q documentExecutor, docNo string, edits []model.LineEdit) error {
+	if len(edits) == 0 {
+		return nil
+	}
+	lines, err := r.detailLines(ctx, q, docNo, nil, false)
+	if err != nil {
+		return err
+	}
+	computed, err := computeLineEdits(lines, edits)
+	if err != nil {
+		return err
+	}
+	for _, edit := range edits {
+		line, ok := computed[edit.RowOrder]
+		if !ok {
+			continue
+		}
+		tag, err := q.Exec(ctx, `
+			update ic_trans_detail
+			set qty = $4::numeric,
+				price = $5::numeric,
+				discount = $6,
+				discount_amount = $7::numeric,
+				sum_amount = $8::numeric
+			where trans_flag = $1
+				and doc_no = $2
+				and roworder = $3
+		`, salesTransFlag, docNo, edit.RowOrder, line.Qty, line.Price, line.Discount, line.DiscountAmount, line.SumAmount)
+		if err != nil {
+			return fmt.Errorf("update line edit for row %d: %w", edit.RowOrder, err)
+		}
+		if tag.RowsAffected() != 1 {
+			return fmt.Errorf("line edit row not found in sales details: %d", edit.RowOrder)
+		}
+	}
+	return nil
+}
+
 // insertAddedDetailLines appends user-supplied new lines to a document inside
 // the apply transaction. Strategy: clone an existing detail row of the same doc
 // (so all NOT-NULL / business fields like doc_date, doc_time, calc_flag,
-// stand_value, etc. are inherited), then UPDATE only the line-specific fields.
-// Subsequent UPDATE statements in ApplyChange recompute vat/totals.
-func (r *DocumentRepository) insertAddedDetailLines(ctx context.Context, q documentExecutor, docNo, custCode string, inquiryType, vatType int16, lines []model.NewLineInput) error {
+// stand_value, vat_type/tax_type, etc. are inherited), then UPDATE only the
+// line/customer fields. Subsequent UPDATE statements in ApplyChange recompute
+// VAT amounts without changing detail-level vat_type/tax_type.
+func (r *DocumentRepository) insertAddedDetailLines(ctx context.Context, q documentExecutor, docNo, custCode string, inquiryType int16, lines []model.NewLineInput) error {
 	if len(lines) == 0 {
 		return nil
 	}
@@ -2383,13 +3291,17 @@ func (r *DocumentRepository) insertAddedDetailLines(ctx context.Context, q docum
 		if err != nil || price < 0 {
 			return fmt.Errorf("invalid price for item %s", line.ItemCode)
 		}
-		disc := 0.0
-		if line.Discount != "" {
-			if d, err := strconv.ParseFloat(strings.TrimSpace(line.Discount), 64); err == nil {
-				disc = d
-			}
+		disc, err := computeSMLDiscountAmount(qty, price, line.Discount)
+		if err != nil {
+			return fmt.Errorf("invalid discount for item %s", line.ItemCode)
 		}
-		sumAmount := qty*price - disc
+		sumAmount := roundDecimal2(qty*price - disc)
+		if sumAmount < -0.005 {
+			return fmt.Errorf("discount makes item %s total negative", line.ItemCode)
+		}
+		if sumAmount < 0 {
+			sumAmount = 0
+		}
 		lineNumber := maxLine + int32(i) + 1
 
 		wh := strings.TrimSpace(line.WhCode)
@@ -2440,15 +3352,13 @@ func (r *DocumentRepository) insertAddedDetailLines(ctx context.Context, q docum
 				set_ref_line = '',
 				set_ref_price = 0,
 				set_ref_qty = 0,
-				vat_type = $15::integer,
-				tax_type = $15::smallint,
 				create_date_time_now = now()
 			where roworder = $1
 		`,
 			newRoworder, lineNumber, custCode, inquiryType,
 			line.ItemCode, line.ItemName, line.UnitCode,
 			qty, price, line.Discount, disc, sumAmount,
-			wh, shelf, int32(vatType),
+			wh, shelf,
 		); err != nil {
 			return fmt.Errorf("update new detail line %s: %w", line.ItemCode, err)
 		}
@@ -2464,6 +3374,7 @@ func (r *DocumentRepository) detailLinesByDocNo(ctx context.Context, q documentQ
 	rows, err := q.Query(ctx, `
 		select
 			doc_no,
+			roworder,
 			coalesce(line_number, 0),
 			coalesce(item_code, ''),
 			coalesce(item_name, ''),
@@ -2520,12 +3431,94 @@ func splitPreviewDetailLines(lines []model.DocumentDetailLine, removeCodes []str
 	return removed, remaining
 }
 
+func applyLineEditsToLines(lines []model.DocumentDetailLine, edits []model.LineEdit) ([]model.DocumentDetailLine, error) {
+	if len(edits) == 0 {
+		return lines, nil
+	}
+	next := make([]model.DocumentDetailLine, len(lines))
+	copy(next, lines)
+	computed, err := computeLineEdits(next, edits)
+	if err != nil {
+		return nil, err
+	}
+	for rowOrder, line := range computed {
+		for i := range next {
+			if next[i].RowOrder == rowOrder {
+				next[i] = line.DocumentDetailLine
+				break
+			}
+		}
+	}
+	return next, nil
+}
+
+type computedLineEdit struct {
+	model.DocumentDetailLine
+	DiscountAmount string
+}
+
+func computeLineEdits(lines []model.DocumentDetailLine, edits []model.LineEdit) (map[int64]computedLineEdit, error) {
+	out := make(map[int64]computedLineEdit, len(edits))
+	indexByRowOrder := make(map[int64]int, len(lines))
+	for i, line := range lines {
+		indexByRowOrder[line.RowOrder] = i
+	}
+	for _, edit := range edits {
+		idx, ok := indexByRowOrder[edit.RowOrder]
+		if !ok {
+			return nil, fmt.Errorf("line edit row not found in remaining sales details: %d", edit.RowOrder)
+		}
+		line := lines[idx]
+		qty := parseDecimal(line.Qty)
+		if edit.Qty != nil {
+			parsed, err := parseQtyInput(*edit.Qty)
+			if err != nil || parsed != float64(int64(parsed)) {
+				return nil, fmt.Errorf("invalid qty for row %d", edit.RowOrder)
+			}
+			qty = parsed
+		}
+		price := parseDecimal(line.Price)
+		if edit.Price != nil {
+			parsed, err := parsePriceInput(*edit.Price)
+			if err != nil {
+				return nil, fmt.Errorf("invalid price for row %d", edit.RowOrder)
+			}
+			price = parsed
+		}
+		discountText := line.Discount
+		if edit.Discount != nil {
+			discountText = strings.TrimSpace(*edit.Discount)
+		}
+		discountAmount, err := computeSMLDiscountAmount(qty, price, discountText)
+		if err != nil {
+			return nil, fmt.Errorf("invalid discount for row %d", edit.RowOrder)
+		}
+		sumAmount := roundDecimal2(qty*price - discountAmount)
+		if sumAmount < -0.005 {
+			return nil, fmt.Errorf("discount makes row %d total negative", edit.RowOrder)
+		}
+		if sumAmount < 0 {
+			sumAmount = 0
+		}
+		line.Qty = formatDecimal2(qty)
+		line.Price = formatDecimal2(price)
+		line.Discount = discountText
+		line.SumAmount = formatDecimal2(sumAmount)
+		out[edit.RowOrder] = computedLineEdit{
+			DocumentDetailLine: line,
+			DiscountAmount:     formatDecimal2(discountAmount),
+		}
+	}
+	return out, nil
+}
+
 func scanDetailLines(rows pgx.Rows) ([]model.DocumentDetailLine, error) {
 	items := make([]model.DocumentDetailLine, 0)
 	for rows.Next() {
 		var item model.DocumentDetailLine
 		if err := rows.Scan(
 			&item.DocNo,
+			&item.RowOrder,
 			&item.LineNumber,
 			&item.ItemCode,
 			&item.ItemName,
@@ -2549,11 +3542,89 @@ func scanDetailLines(rows pgx.Rows) ([]model.DocumentDetailLine, error) {
 	return items, rows.Err()
 }
 
+func parseDecimal(s string) float64 {
+	s = strings.TrimSpace(strings.TrimSuffix(s, "%"))
+	if s == "" {
+		return 0
+	}
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0
+	}
+	return v
+}
+
+func parseQtyInput(value string) (float64, error) {
+	qty, err := strconv.ParseFloat(strings.ReplaceAll(strings.TrimSpace(value), ",", ""), 64)
+	if err != nil || qty <= 0 {
+		return 0, fmt.Errorf("qty must be greater than zero")
+	}
+	return qty, nil
+}
+
+func parsePriceInput(value string) (float64, error) {
+	price, err := strconv.ParseFloat(strings.ReplaceAll(strings.TrimSpace(value), ",", ""), 64)
+	if err != nil || price < 0 {
+		return 0, fmt.Errorf("price must be zero or greater")
+	}
+	return price, nil
+}
+
+func computeSMLDiscountAmount(qty, price float64, discountText string) (float64, error) {
+	discountText = strings.TrimSpace(discountText)
+	if discountText == "" {
+		return 0, nil
+	}
+	remaining := roundDecimal2(qty * price)
+	totalDiscount := 0.0
+	for _, rawPart := range strings.Split(discountText, ",") {
+		part := strings.TrimSpace(rawPart)
+		if part == "" {
+			continue
+		}
+		var amount float64
+		if strings.HasSuffix(part, "%") {
+			rawPercent := strings.TrimSpace(strings.TrimSuffix(part, "%"))
+			percent, err := strconv.ParseFloat(rawPercent, 64)
+			if err != nil || percent < 0 {
+				return 0, fmt.Errorf("invalid discount percent")
+			}
+			amount = roundDecimal2(remaining * percent / 100.0)
+		} else {
+			fixed, err := strconv.ParseFloat(part, 64)
+			if err != nil || fixed < 0 {
+				return 0, fmt.Errorf("invalid discount amount")
+			}
+			amount = roundDecimal2(fixed * qty)
+		}
+		totalDiscount = roundDecimal2(totalDiscount + amount)
+		remaining = roundDecimal2(remaining - amount)
+		if remaining < -0.005 {
+			return 0, fmt.Errorf("discount exceeds line amount")
+		}
+		if remaining < 0 {
+			remaining = 0
+		}
+	}
+	return totalDiscount, nil
+}
+
+func roundDecimal2(v float64) float64 {
+	if v >= 0 {
+		return float64(int64(v*100+0.5)) / 100.0
+	}
+	return -float64(int64(-v*100+0.5)) / 100.0
+}
+
+func formatDecimal2(v float64) string {
+	return strconv.FormatFloat(roundDecimal2(v), 'f', 2, 64)
+}
+
 // computeTotalsFromLines mirrors vatTotalsSelectSQL on the Go side so previews
 // can include user-added lines (which are not yet persisted) in the totals.
 // Decimal strings are parsed leniently; unparseable values count as zero.
 func computeTotalsFromLines(remaining []model.DocumentDetailLine, added []model.NewLineInput, vatType int16) model.DocumentTotals {
-	var totalValue, totalBeforeVat, totalVatValue, totalAmount float64
+	var totalValue, totalBeforeVat, totalVatValue, totalAfterVat, totalAmount float64
 	lineCount := int64(0)
 
 	round2 := func(v float64) float64 {
@@ -2580,24 +3651,29 @@ func computeTotalsFromLines(remaining []model.DocumentDetailLine, added []model.
 		switch vatType {
 		case 0:
 			totalBeforeVat += sum
-			totalAmount += sum
+			vat := round2(sum * 7.0 / 100.0)
+			totalVatValue += vat
+			totalAfterVat += sum + vat
+			totalAmount += sum + vat
 		case 1:
 			bv := round2(sum * 100.0 / 107.0)
 			totalBeforeVat += bv
 			totalVatValue += sum - bv
+			totalAfterVat += sum
 			totalAmount += sum
 		case 2:
-			totalBeforeVat += sum
-			vat := round2(sum * 7.0 / 100.0)
-			totalVatValue += vat
-			totalAmount += sum + vat
+			totalAmount += sum
+		case 3:
+			totalAmount += sum
 		default:
 			if useStored {
 				totalBeforeVat += storedBefore
 				totalVatValue += storedVat
+				totalAfterVat += sum + storedVat
 				totalAmount += sum + storedVat
 			} else {
 				totalBeforeVat += sum
+				totalAfterVat += sum
 				totalAmount += sum
 			}
 		}
@@ -2612,7 +3688,10 @@ func computeTotalsFromLines(remaining []model.DocumentDetailLine, added []model.
 	for _, line := range added {
 		qty := parse(line.Qty)
 		price := parse(line.Price)
-		disc := parse(line.Discount)
+		disc, err := computeSMLDiscountAmount(qty, price, line.Discount)
+		if err != nil {
+			disc = 0
+		}
 		sum := qty*price - disc
 		apply(sum, 0, 0, false)
 	}
@@ -2625,6 +3704,8 @@ func computeTotalsFromLines(remaining []model.DocumentDetailLine, added []model.
 		TotalBeforeVat: fmt2(totalBeforeVat),
 		TotalVatValue:  fmt2(totalVatValue),
 		TotalDiscount:  "0",
+		TotalAfterVat:  fmt2(totalAfterVat),
+		TotalExceptVat: "0",
 		TotalAmount:    fmt2(totalAmount),
 		LineCount:      lineCount,
 	}
@@ -2636,6 +3717,8 @@ func zeroDocumentTotals() model.DocumentTotals {
 		TotalBeforeVat: "0",
 		TotalVatValue:  "0",
 		TotalDiscount:  "0",
+		TotalAfterVat:  "0",
+		TotalExceptVat: "0",
 		TotalAmount:    "0",
 	}
 }
@@ -2661,6 +3744,39 @@ func normalizeDocumentWriteError(err error, newDocNo string) error {
 	return nil
 }
 
+func userFacingBatchItemError(err error) string {
+	if err == nil {
+		return "ส่งเข้า SML ไม่สำเร็จ"
+	}
+	if isDuplicateDocumentNumberError(err) {
+		return err.Error()
+	}
+	return userFacingBatchItemMessage(err.Error())
+}
+
+func userFacingBatchItemMessage(message string) string {
+	text := strings.TrimSpace(message)
+	if text == "" {
+		return "ส่งเข้า SML ไม่สำเร็จ"
+	}
+	switch {
+	case strings.Contains(text, "cb_trans sync invariant"),
+		strings.Contains(text, "cb_trans sync:"),
+		strings.Contains(text, "ตรวจสอบยอดชำระไม่ผ่าน"):
+		return "ยอดชำระของบิลนี้อยู่ในรูปแบบที่ระบบต้องตรวจสอบเพิ่มเติม ระบบยังไม่ส่งเข้า SML เพื่อป้องกันยอดชำระผิด"
+	case strings.Contains(text, "ยอดบิลใหม่ต่ำกว่าเงินสดเดิม"),
+		strings.Contains(text, "ยอดบิลใหม่น้อยกว่ายอดเงินสดเดิม"):
+		return "ยอดบิลใหม่ต่ำกว่าเงินสดเดิม จึงยังไม่ส่งเข้า SML"
+	case strings.Contains(text, "ยอดบิลใหม่ทำให้เงินสดติดลบ"),
+		strings.Contains(text, "เงินสดในบิลไม่พอ"):
+		return "ยอดบิลใหม่ทำให้เงินสดติดลบ จึงยังไม่ส่งเข้า SML"
+	case strings.Contains(text, "customer not found"):
+		return "ไม่พบข้อมูลลูกหนี้ในแฟ้มลูกหนี้ กรุณาตรวจสอบรหัสลูกหนี้"
+	default:
+		return text
+	}
+}
+
 func isDuplicateDocumentNumberError(err error) bool {
 	var duplicateErr duplicateDocumentNumberError
 	return errors.As(err, &duplicateErr)
@@ -2670,32 +3786,17 @@ func previewNextDocNo(formatCode, format, latest string, now time.Time) string {
 	if format == "" {
 		return ""
 	}
-	formatCode = strings.TrimSpace(formatCode)
-	// Substitute date tokens first. SML uses both forms:
-	//   - `@YYMM####`  (combined token)
-	//   - `@-YYMM####` (where `@` = doc format code prefix, and `YY`/`MM` are bare placeholders)
-	// Replace longest first to avoid `YYYY` being consumed by `YY`.
-	prefix := strings.ReplaceAll(format, "@YYYYMM", now.Format("200601"))
-	prefix = strings.ReplaceAll(prefix, "@YYMM", now.Format("0601"))
-	prefix = strings.ReplaceAll(prefix, "@YYYY", now.Format("2006"))
-	prefix = strings.ReplaceAll(prefix, "@YY", now.Format("06"))
-	prefix = strings.ReplaceAll(prefix, "@MM", now.Format("01"))
-	prefix = strings.ReplaceAll(prefix, "YYYYMM", now.Format("200601"))
-	prefix = strings.ReplaceAll(prefix, "YYMM", now.Format("0601"))
-	prefix = strings.ReplaceAll(prefix, "YYYY", now.Format("2006"))
-	prefix = strings.ReplaceAll(prefix, "YY", now.Format("06"))
-	prefix = strings.ReplaceAll(prefix, "MM", now.Format("01"))
-	// `@` (after date tokens consumed) represents the doc format code.
-	if formatCode != "" {
-		prefix = strings.ReplaceAll(prefix, "@", formatCode)
-	}
-	hashCount := strings.Count(prefix, "#")
+	staticPrefix, hashCount := renderedDocNoPrefix(formatCode, format, now)
 	if hashCount == 0 {
-		return ensureDocFormatPrefix(formatCode, prefix)
+		return ensureDocFormatPrefix(formatCode, staticPrefix)
 	}
-	staticPrefix := strings.TrimRight(prefix, "#")
 	nextNumber := 1
-	if len(latest) >= len(staticPrefix)+hashCount {
+	if strings.HasPrefix(latest, staticPrefix) && len(latest) >= len(staticPrefix)+hashCount {
+		raw := latest[len(latest)-hashCount:]
+		if parsed, err := strconv.Atoi(raw); err == nil {
+			nextNumber = parsed + 1
+		}
+	} else if len(latest) >= hashCount {
 		raw := latest[len(latest)-hashCount:]
 		if parsed, err := strconv.Atoi(raw); err == nil {
 			nextNumber = parsed + 1
@@ -2703,6 +3804,42 @@ func previewNextDocNo(formatCode, format, latest string, now time.Time) string {
 	}
 	number := fmt.Sprintf("%0*d", hashCount, nextNumber)
 	return ensureDocFormatPrefix(formatCode, staticPrefix+number)
+}
+
+func renderedDocNoPrefix(formatCode, format string, at time.Time) (string, int) {
+	formatCode = strings.TrimSpace(formatCode)
+	// Substitute date tokens first. SML uses both forms:
+	//   - `@YYMMDD####`  (combined token)
+	//   - `@-YYMMDD####` (where `@` = doc format code prefix, and `YY`/`MM`/`DD` are bare placeholders)
+	// Replace longest first to avoid `YYYYMMDD` being partially consumed.
+	prefix := strings.ReplaceAll(format, "@YYYYMMDD", at.Format("20060102"))
+	prefix = strings.ReplaceAll(prefix, "@YYMMDD", at.Format("060102"))
+	prefix = strings.ReplaceAll(prefix, "@YYYYMM", at.Format("200601"))
+	prefix = strings.ReplaceAll(prefix, "@YYMM", at.Format("0601"))
+	prefix = strings.ReplaceAll(prefix, "@YYYY", at.Format("2006"))
+	prefix = strings.ReplaceAll(prefix, "@YY", at.Format("06"))
+	prefix = strings.ReplaceAll(prefix, "@MM", at.Format("01"))
+	prefix = strings.ReplaceAll(prefix, "@DD", at.Format("02"))
+	prefix = strings.ReplaceAll(prefix, "YYYYMMDD", at.Format("20060102"))
+	prefix = strings.ReplaceAll(prefix, "YYMMDD", at.Format("060102"))
+	prefix = strings.ReplaceAll(prefix, "YYYYMM", at.Format("200601"))
+	prefix = strings.ReplaceAll(prefix, "YYMM", at.Format("0601"))
+	prefix = strings.ReplaceAll(prefix, "YYYY", at.Format("2006"))
+	prefix = strings.ReplaceAll(prefix, "YY", at.Format("06"))
+	prefix = strings.ReplaceAll(prefix, "MM", at.Format("01"))
+	prefix = strings.ReplaceAll(prefix, "DD", at.Format("02"))
+	if formatCode != "" {
+		prefix = strings.ReplaceAll(prefix, "@", formatCode)
+	}
+	hashCount := strings.Count(prefix, "#")
+	return ensureDocFormatPrefix(formatCode, strings.TrimRight(prefix, "#")), hashCount
+}
+
+func escapeLike(value string) string {
+	value = strings.ReplaceAll(value, `\`, `\\`)
+	value = strings.ReplaceAll(value, `%`, `\%`)
+	value = strings.ReplaceAll(value, `_`, `\_`)
+	return value
 }
 
 func ensureDocFormatPrefix(formatCode, docNo string) string {

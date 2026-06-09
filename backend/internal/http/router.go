@@ -52,6 +52,7 @@ func NewRouter(
 	api.GET("/healthz", deps.health)
 	api.GET("/readyz", deps.readyz)
 	api.GET("/system/database-status", deps.databaseStatus)
+	api.POST("/system/database-migrate/bootstrap", deps.writeRateLimiter("database_migrate_bootstrap", 5), deps.databaseMigrateBootstrap)
 	api.POST("/system/database-migrate", deps.authMiddleware(), deps.requireRole("Admin"), deps.databaseMigrate)
 	api.POST("/auth/login", deps.loginRateLimiter(), deps.login)
 	api.POST("/auth/logout", deps.logout)
@@ -60,6 +61,9 @@ func NewRouter(
 	api.GET("/documents/selectable-doc-nos", deps.authMiddleware(), deps.selectableDocumentNumbers)
 	api.POST("/documents/bulk/preview-change", deps.authMiddleware(), deps.bulkDocumentChangePreview)
 	api.POST("/documents/bulk/apply-change", deps.authMiddleware(), deps.requireRole("Admin"), deps.writeRateLimiter("bulk_apply", 30), deps.bulkDocumentChangeApply)
+	api.POST("/documents/bulk/apply-change/start", deps.authMiddleware(), deps.requireRole("Admin"), deps.writeRateLimiter("bulk_apply_start", 30), deps.bulkDocumentChangeApplyStart)
+	api.GET("/documents/bulk/batches/:batchId", deps.authMiddleware(), deps.requireRole("Admin"), deps.bulkDocumentChangeBatch)
+	api.POST("/documents/bulk/batches/:batchId/retry-failed", deps.authMiddleware(), deps.requireRole("Admin"), deps.writeRateLimiter("bulk_apply_retry", 30), deps.bulkDocumentChangeRetryFailed)
 	api.POST("/documents/rollback", deps.authMiddleware(), deps.requireRole("Admin"), deps.writeRateLimiter("rollback", 30), deps.documentRollback)
 	api.GET("/documents/:docNo/details", deps.authMiddleware(), deps.documentDetails)
 	api.POST("/documents/items", deps.authMiddleware(), deps.documentsItems)
@@ -245,6 +249,60 @@ func (d RouterDeps) bulkDocumentChangeApply(c *gin.Context) {
 	response.OK(c, nethttp.StatusOK, "bulk documents updated", result)
 }
 
+func (d RouterDeps) bulkDocumentChangeApplyStart(c *gin.Context) {
+	req, ok := bindBulkDocumentChange(c)
+	if !ok {
+		return
+	}
+	claims := c.MustGet("claims").(session.Claims)
+	progress, err := d.state.Current().Documents.StartBulkApplyChange(c.Request.Context(), req, claims.UserCode)
+	if err != nil {
+		metrics.BulkApplyDocumentsTotal.WithLabelValues("error").Add(float64(len(req.DocNos)))
+		d.writeDocumentAudit(c, claims, "bulk.apply_change_start_failed", "bulk", gin.H{"request": req}, gin.H{"error": err.Error()})
+		response.Error(c, nethttp.StatusBadRequest, errorcode.InvalidInput, "start bulk document change failed", err.Error())
+		return
+	}
+	d.writeDocumentAudit(c, claims, "bulk.apply_change_start", "bulk", gin.H{"request": req}, gin.H{
+		"batchId":    progress.BatchID,
+		"batchNo":    progress.BatchNo,
+		"totalCount": progress.TotalCount,
+	})
+	response.OK(c, nethttp.StatusAccepted, "bulk apply started", progress)
+}
+
+func (d RouterDeps) bulkDocumentChangeBatch(c *gin.Context) {
+	batchID, ok := parseBatchID(c)
+	if !ok {
+		return
+	}
+	progress, err := d.state.Current().Documents.BulkApplyBatchProgress(c.Request.Context(), batchID)
+	if err != nil {
+		response.Error(c, nethttp.StatusNotFound, errorcode.NotFound, "load bulk apply batch failed", err.Error())
+		return
+	}
+	response.OK(c, nethttp.StatusOK, "ok", progress)
+}
+
+func (d RouterDeps) bulkDocumentChangeRetryFailed(c *gin.Context) {
+	batchID, ok := parseBatchID(c)
+	if !ok {
+		return
+	}
+	claims := c.MustGet("claims").(session.Claims)
+	progress, err := d.state.Current().Documents.RetryFailedBulkApplyChange(c.Request.Context(), batchID, claims.UserCode)
+	if err != nil {
+		d.writeDocumentAudit(c, claims, "bulk.apply_change_retry_failed", "bulk", gin.H{"batchId": batchID}, gin.H{"error": err.Error()})
+		response.Error(c, nethttp.StatusBadRequest, errorcode.InvalidInput, "retry failed bulk documents failed", err.Error())
+		return
+	}
+	d.writeDocumentAudit(c, claims, "bulk.apply_change_retry", "bulk", gin.H{"batchId": batchID}, gin.H{
+		"batchId":    progress.BatchID,
+		"batchNo":    progress.BatchNo,
+		"totalCount": progress.TotalCount,
+	})
+	response.OK(c, nethttp.StatusAccepted, "bulk retry started", progress)
+}
+
 func (d RouterDeps) documentRollback(c *gin.Context) {
 	var req model.RollbackDocumentRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -303,7 +361,8 @@ func (d RouterDeps) runningNumber(c *gin.Context) {
 		response.Error(c, nethttp.StatusBadRequest, errorcode.InvalidInput, "invalid format", "formatCode is required")
 		return
 	}
-	nextDocNo, latestDocNo, err := d.state.Current().Documents.NextDocNo(c.Request.Context(), formatCode)
+	sourceDocNo := strings.TrimSpace(c.Query("sourceDocNo"))
+	nextDocNo, latestDocNo, err := d.state.Current().Documents.NextDocNo(c.Request.Context(), formatCode, sourceDocNo)
 	if err != nil {
 		response.Error(c, nethttp.StatusInternalServerError, errorcode.DBConnection, "load running number failed", err.Error())
 		return
@@ -379,10 +438,10 @@ func (d RouterDeps) documentsItems(c *gin.Context) {
 
 func (d RouterDeps) saleTypes(c *gin.Context) {
 	response.OK(c, nethttp.StatusOK, "ok", gin.H{"items": []gin.H{
-		{"value": 1, "label": "ขายเงินเชื่อ"},
-		{"value": 2, "label": "ขายเงินสด"},
-		{"value": 3, "label": "ขายสินค้าเงินเชื่อ (สินค้าบริการ)"},
-		{"value": 4, "label": "ขายสินค้าเงินสด (สินค้าบริการ)"},
+		{"value": 0, "label": "ขายเงินเชื่อ"},
+		{"value": 1, "label": "ขายเงินสด"},
+		{"value": 2, "label": "ขายสินค้าเงินเชื่อ (สินค้าบริการ)"},
+		{"value": 3, "label": "ขายสินค้าเงินสด (สินค้าบริการ)"},
 	}})
 }
 
@@ -500,6 +559,27 @@ func (d RouterDeps) databaseStatus(c *gin.Context) {
 
 func (d RouterDeps) databaseMigrate(c *gin.Context) {
 	if err := d.state.Current().Migrator.VerifyAndMigrate(c.Request.Context()); err != nil {
+		response.Error(c, nethttp.StatusInternalServerError, errorcode.DatabaseVerification, "database migration failed", err.Error())
+		return
+	}
+	d.databaseStatus(c)
+}
+
+func (d RouterDeps) databaseMigrateBootstrap(c *gin.Context) {
+	status, err := d.state.Current().Migrator.Verify(c.Request.Context())
+	if err != nil {
+		response.Error(c, nethttp.StatusServiceUnavailable, errorcode.DatabaseVerification, "database verification failed", err.Error())
+		return
+	}
+	if !status.Connected || !status.RequiredSMLReady {
+		response.Error(c, nethttp.StatusConflict, errorcode.DatabaseVerification, "database not ready", "SML tables หลักยังไม่ครบ จึงยังติดตั้งตารางระบบไม่ได้")
+		return
+	}
+	if status.AppSchemaReady {
+		response.OK(c, nethttp.StatusOK, "database schema already ready", status)
+		return
+	}
+	if err := d.state.Current().Migrator.Migrate(c.Request.Context()); err != nil {
 		response.Error(c, nethttp.StatusInternalServerError, errorcode.DatabaseVerification, "database migration failed", err.Error())
 		return
 	}
@@ -642,10 +722,6 @@ func parseDateRange(c *gin.Context) (time.Time, time.Time, bool) {
 		response.Error(c, nethttp.StatusBadRequest, errorcode.InvalidInput, "invalid date range", "to must be after from")
 		return time.Time{}, time.Time{}, false
 	}
-	if to.Sub(from) > 366*24*time.Hour {
-		response.Error(c, nethttp.StatusBadRequest, errorcode.InvalidInput, "date range too large", "date range must be 366 days or less")
-		return time.Time{}, time.Time{}, false
-	}
 	return from, to, true
 }
 
@@ -664,6 +740,20 @@ func parseBoundedInt(raw string, fallback, minValue, maxValue int) int {
 		return maxValue
 	}
 	return value
+}
+
+func parseBatchID(c *gin.Context) (int64, bool) {
+	raw := strings.TrimSpace(c.Param("batchId"))
+	if raw == "" {
+		response.Error(c, nethttp.StatusBadRequest, errorcode.InvalidInput, "invalid batch id", "batch id is required")
+		return 0, false
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || value <= 0 {
+		response.Error(c, nethttp.StatusBadRequest, errorcode.InvalidInput, "invalid batch id", "batch id must be a positive number")
+		return 0, false
+	}
+	return value, true
 }
 
 // loginRateLimiter throttles authentication attempts per client IP.

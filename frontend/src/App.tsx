@@ -209,6 +209,16 @@ function AppRoutes() {
     routerNavigate("/bulk-edit", { replace: true });
   }
 
+  async function bootstrapDatabase() {
+    const response = await apiPost<DatabaseStatus>("/api/v1/system/database-migrate/bootstrap", {});
+    if (!response.success) {
+      setLoginMessage(response.error?.detail || response.message || "ติดตั้งตารางระบบไม่สำเร็จ");
+      return;
+    }
+    setLoginMessage("");
+    await refreshStatus();
+  }
+
   async function logout() {
     await apiPost("/api/v1/auth/logout", {});
     localStorage.removeItem(authSessionKey);
@@ -225,7 +235,7 @@ function AppRoutes() {
     <Routes>
       <Route
         path="/login"
-        element={user ? <Navigate to="/bulk-edit" replace /> : <LoginScreen databaseReady={ready} message={loginMessage} status={status} onLogin={login} />}
+        element={user ? <Navigate to="/bulk-edit" replace /> : <LoginScreen databaseReady={ready} message={loginMessage} status={status} onBootstrapDatabase={bootstrapDatabase} onLogin={login} />}
       />
       <Route
         path="/*"
@@ -317,21 +327,33 @@ function LoginScreen({
   databaseReady,
   message,
   status,
+  onBootstrapDatabase,
   onLogin,
 }: {
   databaseReady: boolean;
   message: string;
   status: DatabaseStatus | null;
+  onBootstrapDatabase: () => Promise<void>;
   onLogin: (code: string, password: string) => Promise<void>;
 }) {
   const [code, setCode] = useState("");
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [installingSchema, setInstallingSchema] = useState(false);
+  const canBootstrapDatabase = Boolean(status?.connected && status.requiredSmlReady && !status.appSchemaReady);
+
   async function submit(event: FormEvent) {
     event.preventDefault();
     setSubmitting(true);
     await onLogin(code, password);
     setSubmitting(false);
+  }
+
+  async function installSchema() {
+    if (!canBootstrapDatabase || installingSchema) return;
+    setInstallingSchema(true);
+    await onBootstrapDatabase();
+    setInstallingSchema(false);
   }
 
   return (
@@ -347,6 +369,25 @@ function LoginScreen({
           </StatusBadge>
           <Typography color="text.secondary" variant="body2">{status?.database || "ไม่พบฐานข้อมูล"}</Typography>
         </Stack>
+        {canBootstrapDatabase ? (
+          <Alert
+            action={
+              <AppButton disabled={installingSchema} onClick={() => void installSchema()} tone="primary" type="button">
+                {installingSchema ? "กำลังติดตั้ง" : "ติดตั้ง"}
+              </AppButton>
+            }
+            severity="warning"
+            sx={{
+              alignItems: { xs: "flex-start", sm: "center" },
+              "& .MuiAlert-action": { ml: { xs: 0, sm: "auto" }, pl: { xs: 0, sm: 2 }, pt: { xs: 1, sm: 0 } },
+            }}
+          >
+            ฐานนี้ยังไม่มีตารางระบบ กดติดตั้งก่อนเข้าสู่ระบบ
+          </Alert>
+        ) : null}
+        {status?.connected && !status.requiredSmlReady ? (
+          <Alert severity="error">ฐานนี้ยังไม่มีตาราง SML หลักครบถ้วน กรุณาตรวจสอบฐานข้อมูลก่อนใช้งาน</Alert>
+        ) : null}
         <TextField autoComplete="username" label="รหัสพนักงาน" value={code} onChange={(event) => setCode(event.target.value)} />
         <TextField
           autoComplete="current-password"
@@ -646,4 +687,3 @@ function DatabaseIndicator({ databaseReady, database }: { databaseReady: boolean
     />
   );
 }
-

@@ -84,6 +84,7 @@ export type ProductUnit = {
 };
 
 export type DocumentDetailLine = {
+  rowOrder: number;
   lineNumber: number;
   itemCode: string;
   itemName: string;
@@ -115,13 +116,29 @@ export type NewLineInput = {
   shelfCode: string;
 };
 
+export type LineQtyEdit = {
+  rowOrder: number;
+  qty: string;
+};
+
+export type LineEdit = {
+  rowOrder: number;
+  qty?: string;
+  price?: string;
+  discount?: string;
+};
+
 export type DocEdit = {
   docNo: string;
   removeItemCodes: string[];
   addedLines: NewLineInput[];
+  lineEdits?: LineEdit[];
+  lineQtyEdits?: LineQtyEdit[];
+  remark?: string;
 };
 
 export type DocumentPaymentDetail = {
+  rowOrder: number;
   lineNumber: number;
   docType: number;
   transNumber: string;
@@ -161,7 +178,10 @@ export type DocumentChangePreview = {
   after: DocumentSummary;
   totals: {
     totalValue: string;
+    totalBeforeVat?: string;
     totalVatValue: string;
+    totalAfterVat?: string;
+    totalExceptVat?: string;
     totalAmount: string;
     lineCount: number;
   };
@@ -187,14 +207,18 @@ export type BulkDocumentChangeRequest = {
 export type BulkDocumentChangeItem = {
   docNo: string;
   newDocNo: string;
-  status: "ready" | "warning" | "blocked" | "applied" | "failed" | "skipped";
+  status: "ready" | "warning" | "blocked" | "pending" | "processing" | "applied" | "failed" | "skipped";
   message: string;
   preview: DocumentChangePreview | null;
   removeHits: string[];
   addedLines?: NewLineInput[];
+  lineEdits?: LineEdit[];
+  lineQtyEdits?: LineQtyEdit[];
 };
 
 export type BulkDocumentChangeResult = {
+  batchId?: number;
+  batchNo?: string;
   items: BulkDocumentChangeItem[];
   totalCount: number;
   readyCount: number;
@@ -203,6 +227,14 @@ export type BulkDocumentChangeResult = {
   appliedCount: number;
   failedCount: number;
   skippedCount: number;
+};
+
+export type BulkApplyBatchProgress = BulkDocumentChangeResult & {
+  status: "pending" | "processing" | "done" | "partial" | "failed";
+  pendingCount: number;
+  processingCount: number;
+  batchId: number;
+  batchNo: string;
 };
 
 export type PreviewChangeItem = {

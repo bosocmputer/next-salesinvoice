@@ -1,8 +1,50 @@
 # next-salesinvoice Session Handoff
 
-Last updated: 2026-05-20 Asia/Bangkok (Phase 8: cb_trans / cb_trans_detail auto-sync + drop sale-type from edit dialog + hide add-item from preview)
+Last updated: 2026-05-21 Asia/Bangkok (Phase 10: bulk edit UX feedback + row-level qty edits + audit comparison dialog)
 
 ไฟล์นี้คือ checkpoint ล่าสุดสำหรับเปิด chat ใหม่หรือส่งต่อให้ AI ตัวอื่นทำงานต่อ อ่านคู่กับ `README.md` ก่อนแก้โค้ดเสมอ
+
+## Phase 10 Summary (2026-05-21)
+
+UI:
+- Settings dialog layout widened/rebalanced; customer search remains server-side prefix search by code/name and does not load the full customer list.
+- Preview dialog supports row-level qty edits for existing lines; totals and the left document queue update immediately from current edits and use 2-decimal display.
+- Confirm apply flow no longer requires typing `ยืนยัน`; cancel returns to preview, and confirm opens a final warning dialog before starting async apply.
+- `/bulk-edit` desktop table height is viewport-aware and leaves room for the sticky action bar.
+- `/audit` combines `บิลเดิม`/`บิลใหม่` into `ดูการเปลี่ยนแปลง`, opening one comparison dialog showing original -> new values.
+
+Backend:
+- `DocumentDetailLine` now includes `rowOrder`.
+- Bulk `perDocEdits` supports `lineQtyEdits: [{ rowOrder, qty }]`; backend validates `qty > 0`, applies qty updates to exact `ic_trans_detail.roworder`, recomputes totals/VAT, and keeps retry payloads intact.
+- Added regression test for duplicate item codes where only the targeted rowOrder quantity changes.
+
+Verification:
+- `go test ./...`: Pass
+- `npm run build`: Pass
+
+## Phase 9 Summary (2026-05-20)
+
+UI:
+- `/bulk-edit` filter now loads only when user clicks `ค้นหา` or presses Enter; date changes and clear-search no longer auto-load.
+- Bulk apply confirm starts an async batch and opens a progress dialog showing `กำลังส่ง X/Y`, applied/failed/pending counts, current processing bill, and recent failures.
+- Partial failure exposes `ส่งซ้ำเฉพาะบิลที่ไม่สำเร็จ`; retry creates a new batch from failed/skipped items only and does not touch applied items.
+- Regen doc number preview keeps `docNoOverrides` through confirm apply, so apply uses the same new doc number shown in preview.
+
+Backend:
+- New endpoints:
+  - `POST /api/v1/documents/bulk/apply-change/start`
+  - `GET /api/v1/documents/bulk/batches/:batchId`
+  - `POST /api/v1/documents/bulk/batches/:batchId/retry-failed`
+- Async v1 uses an in-process goroutine, processes one bill at a time, inserts `pending` items first, updates item status to `processing` then `applied`/`failed`/`skipped`, and refreshes batch counts after each bill.
+- `retry-failed` loads the saved request from the original batch, filters failed/skipped docNos and matching `perDocEdits`, clears `docNoOverrides`, and starts a fresh batch so running numbers are recalculated.
+- Running number allocator now checks candidate numbers against `ic_trans.doc_no` globally for sales `trans_flag=44` and reserves numbers in memory within the same request.
+- Sale type validation allows preserving an existing non-standard `inquiry_type` from SML while still rejecting invalid changes.
+
+Verification/deploy:
+- `go test ./...`: Pass
+- `npm run build`: Pass
+- Deployed via `./deploy.sh`; latest quick tunnel: `https://households-selected-capability-readily.trycloudflare.com`
+- Smoke checked `/bulk-edit`, `/api/v1/health`, direct readyz, and unauthenticated batch progress returns 401 as expected.
 
 ## Phase 8 Summary (2026-05-20)
 
@@ -52,7 +94,7 @@ Env: เพิ่ม `NSI_CB_TRANS_SYNC=true` ใน `backend/.env.example`
 - Frontend URL (local dev): `http://127.0.0.1:3000/`
 - Backend URL (local dev): `http://127.0.0.1:8080/`
 - Customer-facing deploy: docker compose on `192.168.2.109` exposing port 3040 (frontend) + 8085 (backend) via cloudflared quick tunnel
-- Latest tunnel URL (respawns each `./deploy.sh`): `https://formal-chicken-domestic-democracy.trycloudflare.com`
+- Latest tunnel URL (respawns each `./deploy.sh`): `https://households-selected-capability-readily.trycloudflare.com`
 - Admin login on demo DB: code `001` / password `001` (erp_user.title=`admin` → maps to Admin role)
 
 ## Stack
@@ -92,7 +134,7 @@ App-owned tables:
 
 ## Permissions
 
-- `EMP001 / 1234`: Admin when `erp_user.title = admin`
+- Current demo admin login: `001 / 001` when `erp_user.title = admin`
 - Admin can apply changes, rollback, view audit, and run system setup actions
 - Normal users can view/search but cannot perform protected write/admin actions
 
@@ -131,11 +173,11 @@ Commit หลักรอบ UX/A11y ล่าสุด: typography primitives �
 - แสดง DB status badge (ฐานข้อมูลพร้อมใช้งาน / ฐานข้อมูลยังไม่พร้อม)
 - ไม่มีปุ่ม "ตั้งค่าฐานข้อมูล" แล้ว — config บังคับผ่าน `.env` เท่านั้น
 
-`/bulk-edit` (UX redesign Phase 1-3, 2026-05-18):
+`/bulk-edit` (UX redesign Phase 1-3, 2026-05-18; async bulk apply update 2026-05-20):
 
 - Page header strip: title `แก้ไขบิลครั้งละหลายใบ` + 1-line description + bold counter `พบ N บิล` ขวาบน
 - Date defaults narrowed to **current month → today** (was ±15 days)
-- Filter row compact: `[จากวันที่] [ถึงวันที่] [ค้นหา + ? Tooltip + X clear] [↻ IconButton]` — no "ค้นหา" text button, Enter triggers search
+- Filter row compact: `[จากวันที่] [ถึงวันที่] [ค้นหา + ? Tooltip + X clear] [ค้นหา button]` — date/search changes do not auto-load; Enter or button triggers search
 - Search hint moved from caption text to HelpCircle Tooltip (always visible, hover for syntax help)
 - Supports list/range syntax: `INV26050025:INV26050030,INV26050040`
 - DataGrid: removed "ดูรายละเอียด" column → slim 48px chevron-icon column at far right (click opens detail dialog)
@@ -150,7 +192,8 @@ Commit หลักรอบ UX/A11y ล่าสุด: typography primitives �
   - If `changedCount === 0`: shows text "ไม่มีการเปลี่ยนแปลงระดับเอกสาร (มีเฉพาะการลบรายการสินค้า N รายการ)"
   - Removed redundant helper sentence "ช่องที่มีพื้นหลังสีอ่อนคือ..." (visual cues already self-explanatory)
 - Settings dialog still uses compact one-row header, MUI controls
-- Confirm dialog still required before real write
+- Confirm dialog still required before real write; confirm starts async apply progress dialog and polls every 1s until batch finishes
+- If batch ends partial, user can retry failed/skipped only; applied bills from the previous batch are not touched
 
 - **Items-to-remove picker** (Phase 6, 2026-05-19):
   - เปลี่ยนจาก Autocomplete typeahead (ค้นจาก `ic_inventory` ทั้งระบบ) → `TextField select multiple` พื้นฐาน แสดงเฉพาะสินค้าที่มีในบิลที่ user เลือกไว้ (dedup’d จาก `ic_trans_detail`)
@@ -202,8 +245,12 @@ Commit หลักรอบ UX/A11y ล่าสุด: typography primitives �
 - **Database connection config is env-only** (`SML_DB_*`); runtime APIs for changing DB config (`database-bootstrap`, `database-config`, `database-reconnect`, `database-verify`) have been removed
 - Document search parser supports exact list/range syntax and falls back to fuzzy search for normal text
 - Audit document search uses the same parser behavior
-- **Doc number generator** (`previewNextDocNo` in `document_repository.go` ~line 2008) now supports SML formats with `@` marker (e.g. `@-YYMM####`). Substitution order: `@YYYYMM`, `@YYMM`, `@YYYY`, `@YY`, `@MM`, then bare `YYYYMM`/`YYMM`/`YYYY`/`YY`/`MM`, then `@` → `formatCode`. Tests in `document_repository_test.go`.
+- **Doc number generator** (`previewNextDocNo` / running-number allocator in `document_repository.go`) supports SML formats with `@` marker (e.g. `@-YYMM####`) and now skips candidates already present in `ic_trans.doc_no` for sales `trans_flag=44` regardless of `doc_format_code`. It also reserves generated numbers in memory within the same request so bulk preview/apply never returns duplicates in one batch. Tests in `document_repository_test.go`.
 - **Per-doc edits endpoint payload** (`/bulk/preview-change`, `/bulk/apply-change`): นอกจาก legacy global `removeItemCodes` ยังรับ `perDocEdits: map[docNo]{ removeItemCodes, addedLines }` สำหรับลบ/เพิ่มรายการแบบต่อบิล (Phase 7).
+- **Async bulk apply endpoints** (Phase 9): frontend uses `POST /bulk/apply-change/start` then polls `GET /bulk/batches/:batchId`. Existing sync `POST /bulk/apply-change` remains for compatibility.
+- **Bulk apply progress storage**: `StartBulkApplyChange` creates a `nsi_reflow_batches` row and `pending` `nsi_reflow_batch_items`, then an in-process worker updates each item through `processing` → `applied`/`failed`/`skipped`, refreshing counts after every bill.
+- **Retry failed only**: `POST /bulk/batches/:batchId/retry-failed` creates a new batch from failed/skipped items of the previous batch only, filters per-doc edits to those docs, and clears `docNoOverrides` so duplicate doc numbers are regenerated instead of reused.
+- **Sale type validation**: bulk change can preserve an existing non-standard SML `inquiry_type` when the request uses the sentinel/preserved value, but still rejects changing a normal doc to an invalid sale type.
 - **`GET /api/v1/master/product-units?code=<icCode>`** (Phase 7): คืนรายการหน่วยของสินค้านั้นจาก `ic_unit_use` left join `ic_unit` (order by `line_number`).
 - **`tax_doc_no` is synced to `doc_no`** on both apply (line ~519) and rollback (line ~933) paths.
 - **`Documents.List` returns total count** via separate `select count(*)` query (signature: `([]model.DocumentSummary, bool, int, error)`). Frontend `BulkInvoiceEditPage.tsx` displays `แสดง ${items.length} / ${total} บิล`.
@@ -217,18 +264,15 @@ Commit หลักรอบ UX/A11y ล่าสุด: typography primitives �
 
 Expected important modified/deleted files from current work:
 
-- `backend/internal/appruntime/state.go`
 - `backend/internal/http/router.go`
 - `backend/internal/model/document.go`
-- `backend/internal/repository/audit_repository.go`
 - `backend/internal/repository/document_repository.go`
 - `backend/internal/repository/document_repository_test.go`
-- `frontend/package.json`
-- `frontend/package-lock.json`
-- `frontend/src/App.tsx`
-- `frontend/src/styles.css`
-- removed old custom UI/config files under `frontend/src/components/ui`, `frontend/src/lib/utils.ts`, `frontend/components.json`, `frontend/postcss.config.js`, `frontend/tailwind.config.ts`
-- documentation cleanup updates these docs and deletes old root docs
+- `frontend/src/pages/BulkInvoiceEditPage.tsx`
+- `frontend/src/pages/AuditLogPage.tsx`
+- `frontend/src/lib/format.ts`
+- `frontend/src/types.ts`
+- docs updated for current status: `README.md`, `SESSION_HANDOFF.md`, `backend/README.md`, `frontend/README.md`
 
 Do not assume these changes are committed.
 
@@ -238,9 +282,11 @@ Passed in this session:
 
 - `npm run build`
 - `go test ./...`
-- `GET http://127.0.0.1:8080/api/v1/health`
-- Playwright + `@axe-core/playwright` smoke (`tests/e2e/a11y.spec.ts`) — 0 violations
-- Browser visual audit ผ่าน Cloudflare quick tunnel: คะแนน 9.1/10 (baseline 6.8)
+- Cloudflare quick tunnel deploy: `https://households-selected-capability-readily.trycloudflare.com`
+- `GET /bulk-edit`: 200
+- `GET /api/v1/health`: healthy
+- Direct ready check `http://192.168.2.109:8085/api/v1/readyz`: ready
+- Unauthenticated batch progress endpoint returns 401 as expected
 
 ## Production Deploy Notes
 
@@ -248,7 +294,7 @@ Passed in this session:
 - **Customer install (production)**: ทำตาม [`docs/INSTALL_UBUNTU.md`](docs/INSTALL_UBUNTU.md) — Docker engine + compose plugin → `/opt/next-salesinvoice` → `.env` (`SESSION_SECRET` ≥ 32 chars สุ่มใหม่ทุก deployment) → docker compose up → nginx reverse proxy + Let's Encrypt → ufw allow 22/80/443 เท่านั้น
 - Backend auth cookie: `Secure: cfg.IsProduction()` — production ต้องเข้าผ่าน HTTPS เท่านั้น; HTTP plain login ไม่ติด (cookie ไม่ส่งกลับ)
 - Cloudflare quick tunnel URL respawns ทุกรอบ `./deploy.sh` — ดู stdout
-- Dev login: `EMP001 / 1234`
+- Dev login on current demo DB: `001 / 001`
 
 ## Important Safety Rules
 
@@ -265,9 +311,10 @@ Passed in this session:
 ## Remaining Work
 
 - Run staging real-write + rollback after any risky backend change if user confirms staging write
-- Stress test with production-like data sizes
+- Manual QA async progress with 50/100-bill batches and retry failed/skipped cases
 - Multi-user conflict/stress test
 - Full E2E seed/apply/rollback regression suite
+- If server restarts during async batch, v1 may leave an item in `processing`; progress will show current state and retry should be used only for not-applied items
 - VAT rate is hardcoded 7% in `calculateTotals` / detail UPDATE; if customer ever needs different rate (e.g. 0% export, future rate changes), source it from `ic_trans.vat_rate` (header has the column) via subquery or pass as param
 - Add unit/integration test for VAT recomputation (type 0/1/2 + deletion combinations) — existing tests cover doc-number generation only
 - **Pre-PROD checklist (UX redesign deployed, awaiting user QA round):**

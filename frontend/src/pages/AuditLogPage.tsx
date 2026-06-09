@@ -19,8 +19,6 @@ import {
   LinearProgress,
   Paper,
   Stack,
-  Tab,
-  Tabs,
   TextField,
   Tooltip,
   Typography,
@@ -34,7 +32,7 @@ import { Copy, HelpCircle, RefreshCw, Search, X } from "lucide-react";
 import { useToast } from "../contexts/toast";
 import { apiGet, apiPost } from "../lib/api";
 import {
-  buildAuditInvoiceDialog,
+  buildAuditComparisonDialog,
   formatDateTime,
   formatMoney,
 } from "../lib/format";
@@ -133,11 +131,10 @@ export default function AuditLogPage({ selectedDocNo, user }: { selectedDocNo: s
       headerName: "จัดการ",
       sortable: false,
       filterable: false,
-      width: 260,
+      width: 250,
       renderCell: (params) => (
         <Stack direction="row" sx={{ alignItems: "center", flexWrap: "nowrap", gap: 0.5, overflow: "hidden", py: 0.5 }}>
-          <AppButton onClick={(event) => { event.stopPropagation(); setDetailDialog(buildAuditInvoiceDialog(params.row, "before")); }} size="small" sx={auditActionButtonSx}>บิลเดิม</AppButton>
-          <AppButton onClick={(event) => { event.stopPropagation(); setDetailDialog(buildAuditInvoiceDialog(params.row, "after")); }} size="small" sx={auditActionButtonSx}>บิลใหม่</AppButton>
+          <AppButton onClick={(event) => { event.stopPropagation(); setDetailDialog(buildAuditComparisonDialog(params.row)); }} size="small" sx={auditActionButtonSx}>ดูการเปลี่ยนแปลง</AppButton>
           <AppButton onClick={(event) => { event.stopPropagation(); setTechnicalDialog(params.row); }} size="small" sx={auditActionButtonSx}>เทคนิค</AppButton>
           <Button color="error" disabled={Boolean(params.row.rolledBackAt)} onClick={(event) => { event.stopPropagation(); openRollbackConfirm(params.row); }} size="small" sx={auditActionButtonSx} variant="outlined">ย้อนกลับ</Button>
         </Stack>
@@ -263,8 +260,7 @@ export default function AuditLogPage({ selectedDocNo, user }: { selectedDocNo: s
                 key={item.snapshotId}
                 onRollback={() => openRollbackConfirm(item)}
                 onViewTechnical={() => setTechnicalDialog(item)}
-                onViewAfter={() => setDetailDialog(buildAuditInvoiceDialog(item, "after"))}
-                onViewBefore={() => setDetailDialog(buildAuditInvoiceDialog(item, "before"))}
+                onViewChange={() => setDetailDialog(buildAuditComparisonDialog(item))}
               />
             ))}
             {!histories.length && !loading ? <EmptyState title="ยังไม่มีประวัติเอกสาร" description="ลองค้นหาด้วยเลขเอกสารเดิมหรือเลขเอกสารใหม่" /> : null}
@@ -350,14 +346,12 @@ function DocumentHistoryCard({
   item,
   onRollback,
   onViewTechnical,
-  onViewAfter,
-  onViewBefore,
+  onViewChange,
 }: {
   item: DocumentHistoryItem;
   onRollback: () => void;
   onViewTechnical: () => void;
-  onViewAfter: () => void;
-  onViewBefore: () => void;
+  onViewChange: () => void;
 }) {
   const detailCount = Array.isArray(item.after.icTransDetail) ? item.after.icTransDetail.length : 0;
   return (
@@ -380,8 +374,7 @@ function DocumentHistoryCard({
           <DocumentFact label="จำนวนสินค้า" value={`${detailCount}`} />
         </Box>
         <Stack direction="row" sx={{ flexWrap: "wrap", gap: 0.75 }}>
-          <AppButton onClick={onViewBefore} size="small" sx={auditActionButtonSx}>ดูบิลเดิม</AppButton>
-          <AppButton onClick={onViewAfter} size="small" sx={auditActionButtonSx}>ดูบิลใหม่</AppButton>
+          <AppButton onClick={onViewChange} size="small" sx={auditActionButtonSx}>ดูการเปลี่ยนแปลง</AppButton>
           <AppButton onClick={onViewTechnical} size="small" sx={auditActionButtonSx}>ข้อมูลเทคนิค</AppButton>
           <Button color="error" disabled={Boolean(item.rolledBackAt)} onClick={onRollback} size="small" sx={auditActionButtonSx} variant="outlined">ย้อนกลับ</Button>
         </Stack>
@@ -392,17 +385,15 @@ function DocumentHistoryCard({
 
 function TechnicalJsonDialog({ item, onClose }: { item: DocumentHistoryItem; onClose: () => void }) {
   const isMobile = useMediaQuery(appTheme.breakpoints.down("sm"));
-  const [tab, setTab] = useState(0);
   const [copied, setCopied] = useState(false);
   const toast = useToast();
-  const sections = useMemo(() => technicalJsonSections(item), [item]);
-  const active = sections[tab] || sections[0];
-  const jsonComponents = useMemo(() => createJsonDiffComponents(active.diff), [active.diff]);
-  const hasDiff = active.diff.size > 0;
+  const technicalJson = useMemo(() => buildTechnicalJson(item), [item]);
+  const jsonComponents = useMemo(() => createJsonDiffComponents(technicalJson.diff), [technicalJson.diff]);
+  const hasDiff = technicalJson.diff.size > 0;
 
   async function copyActiveJson() {
     try {
-      await navigator.clipboard?.writeText(formatJSON(active.value));
+      await navigator.clipboard?.writeText(formatJSON(technicalJson.value));
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1400);
       toast("คัดลอก JSON เรียบร้อย", "success");
@@ -429,18 +420,10 @@ function TechnicalJsonDialog({ item, onClose }: { item: DocumentHistoryItem; onC
         </Stack>
       </DialogTitle>
       <DialogContent dividers sx={{ p: 0 }}>
-        <Box sx={{ borderBottom: 1, borderColor: "divider", px: { xs: 1, sm: 2 } }}>
-          <Tabs
-            allowScrollButtonsMobile
-            onChange={(_, value) => setTab(value)}
-            scrollButtons="auto"
-            value={tab}
-            variant="scrollable"
-          >
-            {sections.map((section) => (
-              <Tab key={section.label} label={section.label} />
-            ))}
-          </Tabs>
+        <Box sx={{ borderBottom: 1, borderColor: "divider", px: { xs: 1.25, sm: 2 }, py: 1 }}>
+          <Typography color="text.secondary" variant="body2">
+            JSON ชุดเดียวรวมค่าเดิมและค่าใหม่ไว้ในหัวข้อเดียวกัน
+          </Typography>
         </Box>
         <Box sx={{ bgcolor: "background.default", maxHeight: { xs: "calc(100vh - 154px)", sm: "70vh" }, overflow: "auto", p: { xs: 1.25, sm: 2 } }}>
           <Stack direction="row" spacing={0.75} sx={{ flexWrap: "wrap", mb: 1 }}>
@@ -460,8 +443,7 @@ function TechnicalJsonDialog({ item, onClose }: { item: DocumentHistoryItem; onC
             displayDataTypes={false}
             enableClipboard
             indentWidth={18}
-            keyName={active.keyName}
-            objectSortKeys
+            keyName={technicalJson.keyName}
             shortenTextAfterLength={80}
             style={{
               ...jsonViewLightTheme,
@@ -470,13 +452,13 @@ function TechnicalJsonDialog({ item, onClose }: { item: DocumentHistoryItem; onC
               fontSize: 13,
               lineHeight: 1.55,
             } as CSSProperties}
-            value={jsonViewObject(active.value)}
+            value={jsonViewObject(technicalJson.value)}
           />
         </Box>
       </DialogContent>
       <DialogActions sx={{ justifyContent: "space-between" }}>
         <Typography color="text.secondary" variant="caption">
-          แสดงข้อมูลดิบตาม JSON.stringify สำหรับตรวจสอบและดีบัก
+          แสดงข้อมูลดิบแบบ before/after ใน JSON เดียวสำหรับตรวจสอบและดีบัก
         </Typography>
         <AppButton onClick={onClose}>ปิด</AppButton>
       </DialogActions>
@@ -484,21 +466,22 @@ function TechnicalJsonDialog({ item, onClose }: { item: DocumentHistoryItem; onC
   );
 }
 
-function technicalJsonSections(item: DocumentHistoryItem) {
-  const beforeHeaderDiff = buildJsonDiff(item.before.icTrans, item.after.icTrans, "before");
-  const afterHeaderDiff = buildJsonDiff(item.before.icTrans, item.after.icTrans, "after");
-  const beforeDetailDiff = buildDetailJsonDiff(item.before.icTransDetail, item.after.icTransDetail, "before");
-  const afterDetailDiff = buildDetailJsonDiff(item.before.icTransDetail, item.after.icTransDetail, "after");
-  return [
-    { diff: beforeHeaderDiff, label: "บิลเดิม", keyName: "before.ic_trans", value: item.before.icTrans },
-    { diff: afterHeaderDiff, label: "บิลใหม่", keyName: "after.ic_trans", value: item.after.icTrans },
-    { diff: beforeDetailDiff, label: "สินค้าเดิม", keyName: "before.ic_trans_detail", value: item.before.icTransDetail },
-    { diff: afterDetailDiff, label: "สินค้าใหม่", keyName: "after.ic_trans_detail", value: item.after.icTransDetail },
-    {
-      diff: new Map(),
-      label: "สรุป",
-      keyName: "snapshot",
-      value: {
+function buildTechnicalJson(item: DocumentHistoryItem) {
+  const diff: JsonDiffMap = new Map();
+  const beforeICTrans = sanitizeTechnicalJsonForDisplay(item.before.icTrans);
+  const afterICTrans = sanitizeTechnicalJsonForDisplay(item.after.icTrans);
+  const beforeICTransDetail = sanitizeTechnicalJsonForDisplay(item.before.icTransDetail);
+  const afterICTransDetail = sanitizeTechnicalJsonForDisplay(item.after.icTransDetail);
+
+  collectJsonDiff(beforeICTrans, afterICTrans, "before", ["ic_trans", "before"], diff);
+  collectJsonDiff(beforeICTrans, afterICTrans, "after", ["ic_trans", "after"], diff);
+
+  const detailRows = unifiedDetailRows(beforeICTransDetail, afterICTransDetail, diff);
+  return {
+    diff,
+    keyName: "audit",
+    value: {
+      snapshot: {
         snapshotId: item.snapshotId,
         batchId: item.batchId,
         originalDocNo: item.originalDocNo,
@@ -508,10 +491,80 @@ function technicalJsonSections(item: DocumentHistoryItem) {
         createdBy: item.createdBy,
         createdAt: item.createdAt,
         rolledBackAt: item.rolledBackAt || null,
-        afterSummary: item.afterSummary || null,
+        afterSummary: sanitizeTechnicalJsonForDisplay(item.afterSummary || null),
       },
+      ic_trans: {
+        before: beforeICTrans,
+        after: afterICTrans,
+      },
+      ic_trans_detail: detailRows,
     },
-  ];
+  };
+}
+
+const hiddenTechnicalJsonKeys = new Set([
+  "receive_money",
+  "receiveMoney",
+  "money_change",
+  "moneyChange",
+]);
+
+function sanitizeTechnicalJsonForDisplay<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeTechnicalJsonForDisplay(item)) as T;
+  }
+  if (!isJsonRecord(value)) return value;
+
+  const cleaned: Record<string, unknown> = {};
+  Object.entries(value).forEach(([key, child]) => {
+    if (!hiddenTechnicalJsonKeys.has(key)) {
+      cleaned[key] = sanitizeTechnicalJsonForDisplay(child);
+    }
+  });
+  return cleaned as T;
+}
+
+function unifiedDetailRows(before: Array<Record<string, unknown>>, after: Array<Record<string, unknown>>, diff: JsonDiffMap) {
+  const beforeMap = indexedDetailMap(before);
+  const afterMap = indexedDetailMap(after);
+  const seen = new Set<string>();
+  const identities: string[] = [];
+  before.forEach((row, index) => {
+    const identity = detailRowIdentity(row, index);
+    seen.add(identity);
+    identities.push(identity);
+  });
+  after.forEach((row, index) => {
+    const identity = detailRowIdentity(row, index);
+    if (!seen.has(identity)) identities.push(identity);
+  });
+
+  return identities.map((identity, index) => {
+    const beforeRow = beforeMap.get(identity)?.row ?? null;
+    const afterRow = afterMap.get(identity)?.row ?? null;
+    const basePath: Array<string | number> = ["ic_trans_detail", index];
+    let status = "same";
+    if (beforeRow && afterRow) {
+      if (!jsonValuesEqual(beforeRow, afterRow)) {
+        status = "changed";
+        collectJsonDiff(beforeRow, afterRow, "before", [...basePath, "before"], diff);
+        collectJsonDiff(beforeRow, afterRow, "after", [...basePath, "after"], diff);
+      }
+    } else if (beforeRow) {
+      status = "removed";
+      markJsonSubtree(beforeRow, [...basePath, "before"], "removed", diff);
+    } else if (afterRow) {
+      status = "added";
+      markJsonSubtree(afterRow, [...basePath, "after"], "added", diff);
+    }
+
+    return {
+      row: identity,
+      status,
+      before: beforeRow,
+      after: afterRow,
+    };
+  });
 }
 
 function DiffLegend({ status }: { status: JsonDiffStatus }) {
@@ -623,33 +676,6 @@ function jsonDiffTitle(status: JsonDiffStatus) {
   return "ค่าเปลี่ยนจากก่อนแก้ไข";
 }
 
-function buildJsonDiff(before: unknown, after: unknown, side: "before" | "after") {
-  const diff: JsonDiffMap = new Map();
-  collectJsonDiff(before, after, side, [], diff);
-  return diff;
-}
-
-function buildDetailJsonDiff(before: Array<Record<string, unknown>>, after: Array<Record<string, unknown>>, side: "before" | "after") {
-  const diff: JsonDiffMap = new Map();
-  const beforeMap = indexedDetailMap(before);
-  const afterMap = indexedDetailMap(after);
-  const rows = side === "before" ? before : after;
-  const comparison = side === "before" ? afterMap : beforeMap;
-  const missingStatus: JsonDiffStatus = side === "before" ? "removed" : "added";
-
-  rows.forEach((row, index) => {
-    const identity = detailRowIdentity(row, index);
-    const other = comparison.get(identity);
-    if (!other) {
-      markJsonSubtree(row, [index], missingStatus, diff);
-      return;
-    }
-    if (side === "before") collectJsonDiff(row, other.row, side, [index], diff);
-    else collectJsonDiff(other.row, row, side, [index], diff);
-  });
-  return diff;
-}
-
 function collectJsonDiff(before: unknown, after: unknown, side: "before" | "after", path: Array<string | number>, diff: JsonDiffMap) {
   if (jsonValuesEqual(before, after)) return;
 
@@ -723,6 +749,8 @@ function indexedDetailMap(rows: Array<Record<string, unknown>>) {
 }
 
 function detailRowIdentity(row: Record<string, unknown>, index: number) {
+  const rowOrder = readJsonField(row, ["roworder", "rowOrder"]);
+  if (rowOrder) return `roworder:${rowOrder}`;
   const line = readJsonField(row, ["line_number", "lineNumber", "line_no", "lineNo"]);
   const item = readJsonField(row, ["item_code", "itemCode", "barcode"]);
   return `${line ?? index}:${item ?? ""}`;

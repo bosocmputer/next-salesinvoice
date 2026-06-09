@@ -37,6 +37,7 @@ type DocumentSummary struct {
 
 type DocumentDetailLine struct {
 	DocNo               string `json:"docNo"`
+	RowOrder            int64  `json:"rowOrder"`
 	LineNumber          int32  `json:"lineNumber"`
 	ItemCode            string `json:"itemCode"`
 	ItemName            string `json:"itemName"`
@@ -93,6 +94,8 @@ type DocumentChangeRequest struct {
 	Remark          string         `json:"remark"`
 	RemoveItemCodes []string       `json:"removeItemCodes"`
 	AddedLines      []NewLineInput `json:"addedLines"`
+	LineEdits       []LineEdit     `json:"lineEdits,omitempty"`
+	LineQtyEdits    []LineQtyEdit  `json:"lineQtyEdits,omitempty"`
 }
 
 type DocumentTotals struct {
@@ -100,6 +103,8 @@ type DocumentTotals struct {
 	TotalBeforeVat string `json:"totalBeforeVat"`
 	TotalVatValue  string `json:"totalVatValue"`
 	TotalDiscount  string `json:"totalDiscount"`
+	TotalAfterVat  string `json:"totalAfterVat"`
+	TotalExceptVat string `json:"totalExceptVat"`
 	TotalAmount    string `json:"totalAmount"`
 	LineCount      int64  `json:"lineCount"`
 }
@@ -147,6 +152,7 @@ type DocumentPayment struct {
 }
 
 type DocumentPaymentDetail struct {
+	RowOrder       int64  `json:"rowOrder"`
 	LineNumber     int32  `json:"lineNumber"`
 	DocType        int16  `json:"docType"`
 	TransNumber    string `json:"transNumber"`
@@ -180,6 +186,21 @@ type DocEdit struct {
 	DocNo           string         `json:"docNo"`
 	RemoveItemCodes []string       `json:"removeItemCodes"`
 	AddedLines      []NewLineInput `json:"addedLines"`
+	LineEdits       []LineEdit     `json:"lineEdits,omitempty"`
+	LineQtyEdits    []LineQtyEdit  `json:"lineQtyEdits,omitempty"`
+	Remark          *string        `json:"remark,omitempty"`
+}
+
+type LineQtyEdit struct {
+	RowOrder int64  `json:"rowOrder"`
+	Qty      string `json:"qty"`
+}
+
+type LineEdit struct {
+	RowOrder int64   `json:"rowOrder"`
+	Qty      *string `json:"qty,omitempty"`
+	Price    *string `json:"price,omitempty"`
+	Discount *string `json:"discount,omitempty"`
 }
 
 // NewLineInput is a user-entered new detail line to append to a document.
@@ -196,13 +217,15 @@ type NewLineInput struct {
 }
 
 type BulkDocumentChangeItem struct {
-	DocNo      string                 `json:"docNo"`
-	NewDocNo   string                 `json:"newDocNo"`
-	Status     string                 `json:"status"`
-	Message    string                 `json:"message"`
-	Preview    *DocumentChangePreview `json:"preview"`
-	RemoveHits []string               `json:"removeHits"`
-	AddedLines []NewLineInput         `json:"addedLines"`
+	DocNo        string                 `json:"docNo"`
+	NewDocNo     string                 `json:"newDocNo"`
+	Status       string                 `json:"status"`
+	Message      string                 `json:"message"`
+	Preview      *DocumentChangePreview `json:"preview"`
+	RemoveHits   []string               `json:"removeHits"`
+	AddedLines   []NewLineInput         `json:"addedLines"`
+	LineEdits    []LineEdit             `json:"lineEdits,omitempty"`
+	LineQtyEdits []LineQtyEdit          `json:"lineQtyEdits,omitempty"`
 }
 
 type BulkDocumentChangeResult struct {
@@ -216,6 +239,13 @@ type BulkDocumentChangeResult struct {
 	AppliedCount int                      `json:"appliedCount"`
 	FailedCount  int                      `json:"failedCount"`
 	SkippedCount int                      `json:"skippedCount"`
+}
+
+type BulkApplyBatchProgress struct {
+	BulkDocumentChangeResult
+	Status          string `json:"status"`
+	PendingCount    int    `json:"pendingCount"`
+	ProcessingCount int    `json:"processingCount"`
 }
 
 type RollbackDocumentRequest struct {

@@ -5,24 +5,21 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"next-salesinvoice/backend/internal/model"
 )
 
 // cbTransPaymentFields lists every numeric payment-instrument column on
-// cb_trans whose values together must equal total_amount_pay. They are scaled
-// proportionally when the bill total changes; the rounding residual is
-// absorbed back into cash_amount so the post-write invariant
-//
-//	sum(payment fields) == total_amount_pay == total_amount == newTotal
-//
-// holds exactly within 0.01.
-//
-// Index 0 (cash_amount) is special — it receives the rounding residual and
-// the entire newTotal when the bill previously had no recorded payment
-// (oldTotal == 0).
+// cb_trans whose values together must equal total_amount_pay. Bulk edit usually
+// adjusts only index 0 (cash_amount). The explicit exception is credit-card
+// detail rows for card marker 3881, which are deleted from cb_trans_detail,
+// cleaned from cb_chq_list by the original doc_ref, and moved from card_amount
+// into cash_amount.
 var cbTransPaymentFields = []string{
-	"cash_amount",       // 0 — receives residual
+	"cash_amount",       // 0 — receives the total delta
 	"chq_amount",        // 1
 	"tranfer_amount",    // 2 (sic, SML schema)
 	"card_amount",       // 3
@@ -40,21 +37,22 @@ var cbTransPaymentFields = []string{
 //   - Disabled via NSI_CB_TRANS_SYNC=false → no-op (returns nil).
 //   - No cb_trans row for the bill (credit / AR sales) → no-op (returns nil).
 //     This is the common case for non-POS invoices.
-//   - oldTotal == newTotal → only renames doc_no on header + detail rows
-//     (in case the bill is being re-numbered).
-//   - oldTotal == 0 and newTotal > 0 → assigns the entire newTotal to
-//     cash_amount; zeroes other instruments. Logs would already be skewed
-//     in this edge case.
-//   - General case → proportional scaling of every payment field, then
-//     absorb the rounding residual into cash_amount; same ratio is applied
-//     to cb_trans_detail.amount / sum_amount.
+//   - oldTotal == newTotal → only renames doc_no on header + detail rows.
+//   - General case → adjusts cash_amount by the exact delta and leaves every
+//     non-cash field untouched.
+//   - Explicit card migration → cb_trans_detail rows with doc_type=3 and
+//     trans_number/credit_card_type containing 3881 are deleted; their amount
+//     moves from card_amount into cash_amount so payment totals still match the
+//     bill. cb_chq_list rows pointing at the original doc_no are also deleted.
+//   - If the new bill total falls below the original cash_amount, or cash would
+//     go negative, the caller is blocked.
 //
 // The function ALWAYS uses SELECT ... FOR UPDATE inside the caller's
-// transaction. It NEVER blocks the caller — invariant violations or write
-// failures bubble up as errors which the caller (ApplyChange) rolls back.
+// transaction. Validation or write failures bubble up as errors which the
+// caller (ApplyChange) rolls back.
 func (r *DocumentRepository) syncCbTransToTotal(
 	ctx context.Context, tx pgx.Tx,
-	oldDocNo, newDocNo string, newTotal float64,
+	oldDocNo, newDocNo string, newTotal float64, docCtx cbTransSyncDocumentContext,
 ) error {
 	if !r.cfg.CbTransSyncEnabled {
 		return nil
@@ -86,25 +84,36 @@ func (r *DocumentRepository) syncCbTransToTotal(
 		&oldPay, &payCash,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			// Credit sale or any bill without a cb_trans companion — nothing to sync.
+			if docCtx.InquiryType == 1 {
+				return createCashCbTrans(ctx, tx, newDocNo, newTotal, docCtx)
+			}
 			return nil
 		}
 		return fmt.Errorf("cb_trans sync: lock header: %w", err)
 	}
 
-	// Determine the scaled values.
-	scaled, ratio := scaleCbTransFields(fields, oldPay, newTotal)
+	detailBefore, err := snapshotCbTransDetailPaymentAmounts(ctx, tx, oldDocNo)
+	if err != nil {
+		return fmt.Errorf("cb_trans sync: snapshot detail before: %w", err)
+	}
+	paymentDetails, err := paymentDetailsForUpdate(ctx, tx, oldDocNo)
+	if err != nil {
+		return err
+	}
+	card3881Details := card3881PaymentDetails(paymentDetails)
+	hasCard3881Details := len(card3881Details) > 0
 
-	// Reconcile pay_cash_amount + money_change with the new cash_amount.
-	newCash := scaled[0]
-	newPayCash := payCash
-	if newPayCash < newCash {
-		newPayCash = newCash
+	paymentBefore := documentPaymentFromCbTransFields(fields, oldPay, payCash)
+	paymentBefore.Details = paymentDetails
+	policy := evaluateCbTransPaymentPolicy(paymentBefore, newTotal)
+	if !policy.Allowed {
+		return fmt.Errorf("%s", policy.BlockedReason)
 	}
-	newMoneyChange := newPayCash - newCash
-	if newMoneyChange < 0 {
-		newMoneyChange = 0
-	}
+	newCash := policy.NewCash
+	newCard := parseFloatOrZero(policy.PaymentAfter.CardAmount)
+	payCash = policy.PayCash
+	expectedInstrumentSum := policy.ExpectedInstrumentSum
+	newMoneyChange := policy.NewMoneyChange
 
 	tag, err := tx.Exec(ctx, `
 		update cb_trans
@@ -126,9 +135,9 @@ func (r *DocumentRepository) syncCbTransToTotal(
 			money_change       = $15
 		where doc_no = $12 and trans_flag = $16
 	`,
-		scaled[0], scaled[1], scaled[2], scaled[3], scaled[4],
-		scaled[5], scaled[6], scaled[7], scaled[8], scaled[9],
-		newTotal, oldDocNo, newDocNo, newPayCash, newMoneyChange,
+		newCash, fields[1], fields[2], newCard, fields[4],
+		fields[5], fields[6], fields[7], fields[8], fields[9],
+		newTotal, oldDocNo, newDocNo, payCash, newMoneyChange,
 		salesTransFlag,
 	)
 	if err != nil {
@@ -138,37 +147,48 @@ func (r *DocumentRepository) syncCbTransToTotal(
 		return fmt.Errorf("cb_trans sync: expected 1 header row affected, got %d", n)
 	}
 
-	// Scale detail rows by the same ratio so per-instrument totals stay
-	// consistent. When ratio == 0 (oldPay was zero and we just rewrote to
-	// cash), zero out any leftover detail rows — they no longer correspond
-	// to a recorded non-cash payment.
-	if ratio == 0 {
+	if hasCard3881Details {
 		if _, err := tx.Exec(ctx, `
-			update cb_trans_detail
-			set doc_no = $2,
-				amount = 0,
-				sum_amount = 0
-			where doc_no = $1 and trans_flag = $3
-		`, oldDocNo, newDocNo, salesTransFlag); err != nil {
-			return fmt.Errorf("cb_trans sync: zero detail: %w", err)
+			delete from cb_trans_detail
+			where doc_no = $1
+				and trans_flag = $2
+				and coalesce(doc_type, 0) = 3
+				and (
+					coalesce(trans_number, '') like '%3881%'
+					or coalesce(credit_card_type, '') like '%3881%'
+				)
+		`, oldDocNo, salesTransFlag); err != nil {
+			return fmt.Errorf("cb_trans sync: delete 3881 credit-card detail: %w", err)
 		}
-	} else if ratio != 1 {
-		if _, err := tx.Exec(ctx, `
-			update cb_trans_detail
-			set doc_no = $2,
-				amount = round(amount * $3::numeric, 2),
-				sum_amount = round(sum_amount * $3::numeric, 2)
-			where doc_no = $1 and trans_flag = $4
-		`, oldDocNo, newDocNo, ratio, salesTransFlag); err != nil {
-			return fmt.Errorf("cb_trans sync: scale detail: %w", err)
+		if err := deleteCbChqListByDocRef(ctx, tx, oldDocNo); err != nil {
+			return err
 		}
-	} else if oldDocNo != newDocNo {
+	}
+
+	if oldDocNo != newDocNo {
 		if _, err := tx.Exec(ctx, `
 			update cb_trans_detail
 			set doc_no = $2
 			where doc_no = $1 and trans_flag = $3
 		`, oldDocNo, newDocNo, salesTransFlag); err != nil {
 			return fmt.Errorf("cb_trans sync: rename detail: %w", err)
+		}
+	}
+
+	detailAfter, err := snapshotCbTransDetailPaymentAmounts(ctx, tx, newDocNo)
+	if err != nil {
+		return fmt.Errorf("cb_trans sync: snapshot detail after: %w", err)
+	}
+	if detailAfter != detailBefore {
+		if !hasCard3881Details {
+			return fmt.Errorf("cb_trans sync: cb_trans_detail payment amounts changed unexpectedly")
+		}
+		hasCard3881, err := hasCard3881Detail(ctx, tx, newDocNo)
+		if err != nil {
+			return err
+		}
+		if hasCard3881 {
+			return fmt.Errorf("cb_trans sync: 3881 credit-card detail still exists after cash transfer")
 		}
 	}
 
@@ -195,51 +215,184 @@ func (r *DocumentRepository) syncCbTransToTotal(
 	); err != nil {
 		return fmt.Errorf("cb_trans sync: re-read invariant: %w", err)
 	}
-	sumInstruments := vCash + vChq + vTranfer + vCard + vWallet + vCoupon + vPoint + vDeposit + vAdvance + vPetty
 	const tol = 0.01
-	if math.Abs(sumInstruments-newTotal) > tol ||
+	sumInstruments := vCash + vChq + vTranfer + vCard + vWallet + vCoupon + vPoint + vDeposit + vAdvance + vPetty
+	if math.Abs(sumInstruments-expectedInstrumentSum) > tol ||
 		math.Abs(vTotal-newTotal) > tol ||
 		math.Abs(vTotalNet-newTotal) > tol ||
 		math.Abs(vTotalPay-newTotal) > tol {
 		return fmt.Errorf(
-			"cb_trans sync invariant violated: doc_no=%s newTotal=%.4f sum=%.4f total=%.4f net=%.4f pay=%.4f",
-			newDocNo, newTotal, sumInstruments, vTotal, vTotalNet, vTotalPay,
+			"ตรวจสอบยอดชำระไม่ผ่าน: ระบบจะไม่ส่งบิลนี้เข้า SML กรุณาตรวจสอบข้อมูลการชำระเงินของบิล %s",
+			newDocNo,
 		)
 	}
 	return nil
 }
 
-// scaleCbTransFields returns the new payment-field values and the ratio used.
+type cbTransSyncDocumentContext struct {
+	DocDate       time.Time
+	DocTime       string
+	CustomerCode  string
+	DocFormatCode string
+	InquiryType   int16
+}
+
+func createCashCbTrans(ctx context.Context, tx pgx.Tx, docNo string, total float64, docCtx cbTransSyncDocumentContext) error {
+	if _, err := tx.Exec(ctx, `
+		insert into cb_trans (
+			trans_type, trans_flag, doc_date, doc_no, doc_time, ap_ar_code,
+			pay_type, doc_format_code, total_amount, total_net_amount,
+			total_amount_pay, cash_amount, chq_amount, tranfer_amount,
+			card_amount, wallet_amount, coupon_amount, point_amount,
+			deposit_amount, advance_amount, petty_cash_amount,
+			pay_cash_amount, money_change
+		) values (
+			2, $1, $2, $3, $4, $5,
+			1, $6, $7, $7,
+			$7, $7, 0, 0,
+			0, 0, 0, 0,
+			0, 0, 0,
+			0, 0
+		)
+	`, salesTransFlag, docCtx.DocDate, docNo, docCtx.DocTime, docCtx.CustomerCode, docCtx.DocFormatCode, total); err != nil {
+		return fmt.Errorf("cb_trans sync: create cash header: %w", err)
+	}
+	return nil
+}
+
+func paymentDetailsForUpdate(ctx context.Context, tx pgx.Tx, docNo string) ([]model.DocumentPaymentDetail, error) {
+	rows, err := tx.Query(ctx, `
+		select coalesce(roworder, 0)::int8,
+			coalesce(line_number, 0)::int4,
+			coalesce(doc_type, 0)::smallint,
+			coalesce(trans_number, '')::text,
+			coalesce(bank_code, '')::text,
+			coalesce(credit_card_type, '')::text,
+			coalesce(to_char(chq_date, 'YYYY-MM-DD'), '')::text,
+			coalesce(amount, 0)::numeric::text,
+			coalesce(sum_amount, 0)::numeric::text
+		from cb_trans_detail
+		where doc_no = $1
+			and trans_flag = $2
+		order by roworder
+		for update
+	`, docNo, salesTransFlag)
+	if err != nil {
+		return nil, fmt.Errorf("cb_trans sync: lock payment detail: %w", err)
+	}
+	defer rows.Close()
+
+	var details []model.DocumentPaymentDetail
+	for rows.Next() {
+		var detail model.DocumentPaymentDetail
+		if err := rows.Scan(
+			&detail.RowOrder, &detail.LineNumber, &detail.DocType, &detail.TransNumber,
+			&detail.BankCode, &detail.CreditCardType, &detail.ChqDate, &detail.Amount, &detail.SumAmount,
+		); err != nil {
+			return nil, fmt.Errorf("cb_trans sync: scan 3881 credit-card detail: %w", err)
+		}
+		details = append(details, detail)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("cb_trans sync: iterate 3881 credit-card detail: %w", err)
+	}
+	return details, nil
+}
+
+func card3881PaymentDetails(details []model.DocumentPaymentDetail) []model.DocumentPaymentDetail {
+	out := make([]model.DocumentPaymentDetail, 0)
+	for _, detail := range details {
+		if isCard3881PaymentDetail(detail) {
+			out = append(out, detail)
+		}
+	}
+	return out
+}
+
+func hasCard3881Detail(ctx context.Context, tx pgx.Tx, docNo string) (bool, error) {
+	var exists bool
+	if err := tx.QueryRow(ctx, `
+		select exists (
+			select 1
+			from cb_trans_detail
+			where doc_no = $1
+				and trans_flag = $2
+				and coalesce(doc_type, 0) = 3
+				and (
+					coalesce(trans_number, '') like '%3881%'
+					or coalesce(credit_card_type, '') like '%3881%'
+				)
+		)
+	`, docNo, salesTransFlag).Scan(&exists); err != nil {
+		return false, fmt.Errorf("cb_trans sync: verify 3881 credit-card detail removal: %w", err)
+	}
+	return exists, nil
+}
+
+func documentPaymentFromCbTransFields(fields [10]float64, oldPay, payCash float64) model.DocumentPayment {
+	return model.DocumentPayment{
+		TotalAmount:     formatFloat2(oldPay),
+		TotalNetAmount:  formatFloat2(oldPay),
+		TotalAmountPay:  formatFloat2(oldPay),
+		PayCashAmount:   formatFloat2(payCash),
+		CashAmount:      formatFloat2(fields[0]),
+		ChqAmount:       formatFloat2(fields[1]),
+		TranferAmount:   formatFloat2(fields[2]),
+		CardAmount:      formatFloat2(fields[3]),
+		WalletAmount:    formatFloat2(fields[4]),
+		CouponAmount:    formatFloat2(fields[5]),
+		PointAmount:     formatFloat2(fields[6]),
+		DepositAmount:   formatFloat2(fields[7]),
+		AdvanceAmount:   formatFloat2(fields[8]),
+		PettyCashAmount: formatFloat2(fields[9]),
+		MoneyChange:     formatFloat2(payCash - fields[0]),
+		Details:         []model.DocumentPaymentDetail{},
+	}
+}
+
+// scaleCbTransFields returns the new payment-field values and the cash delta.
 // Pure helper for unit tests.
-//
-// Rules:
-//   - newTotal == oldPay → returns fields unchanged, ratio = 1.
-//   - oldPay == 0 && newTotal > 0 → cash absorbs newTotal, others = 0, ratio = 0.
-//   - otherwise → fields scaled by newTotal/oldPay, residual absorbed into
-//     cash_amount so sum exactly equals newTotal.
 func scaleCbTransFields(fields [10]float64, oldPay, newTotal float64) ([10]float64, float64) {
-	var out [10]float64
-	if math.Abs(newTotal-oldPay) < 0.005 {
-		out = fields
-		return out, 1
-	}
-	if oldPay <= 0.005 {
-		out[0] = round2(newTotal)
-		return out, 0
-	}
-	ratio := newTotal / oldPay
+	out := fields
+	delta := round2(newTotal - oldPay)
+	out[0] = round2(out[0] + delta)
+	return out, delta
+}
+
+func paymentTotalBelowCashAmount(fields [10]float64, newTotal float64) bool {
+	const tol = 0.01
+	return newTotal < fields[0]-tol
+}
+
+func sumPaymentFields(fields [10]float64) float64 {
 	var sum float64
-	for i, v := range fields {
-		out[i] = round2(v * ratio)
-		sum += out[i]
+	for _, value := range fields {
+		sum += value
 	}
-	residual := round2(newTotal - sum)
-	out[0] = round2(out[0] + residual)
-	return out, ratio
+	return round2(sum)
 }
 
 func round2(v float64) float64 {
 	return math.Round(v*100) / 100
+}
+
+func snapshotCbTransDetailPaymentAmounts(ctx context.Context, tx pgx.Tx, docNo string) (string, error) {
+	var snapshot string
+	err := tx.QueryRow(ctx, `
+		select coalesce(jsonb_agg(
+			jsonb_build_object(
+				'roworder', coalesce(roworder, 0),
+				'line_number', coalesce(line_number, 0),
+				'doc_type', coalesce(doc_type, 0),
+				'amount', coalesce(amount, 0)::numeric::text,
+				'sum_amount', coalesce(sum_amount, 0)::numeric::text
+			)
+			order by coalesce(roworder, 0), coalesce(line_number, 0), coalesce(doc_type, 0)
+		), '[]'::jsonb)::text
+		from cb_trans_detail
+		where doc_no = $1 and trans_flag = $2
+	`, docNo, salesTransFlag).Scan(&snapshot)
+	return snapshot, err
 }
 
 // restoreCbTransFromSnapshot wipes any cb_trans / cb_trans_detail rows

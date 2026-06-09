@@ -6,11 +6,11 @@
 
 ## สถานะล่าสุด
 
-อัปเดตล่าสุด: 2026-05-19 Asia/Bangkok
+อัปเดตล่าสุด: 2026-05-20 Asia/Bangkok
 
 - Backend: Go + Gin + pgx/PostgreSQL
 - Frontend: React + Vite + Material UI v9 + `@uiw/react-json-view`
-- UI หลักอยู่ที่ `/bulk-edit`, `/audit`, `/system/status` (UX redesign 2026-05-18: page header strip + sticky action bar + icon-only reload + Enter-to-search + focused preview panel; 2026-05-19: items-to-remove picker scoped to selected docs + per-bill row edit — trash/restore + add line + unit dropdown ใน preview dialog)
+- UI หลักอยู่ที่ `/bulk-edit`, `/audit`, `/system/status` (ล่าสุด 2026-05-21: bulk preview แก้จำนวนสินค้าแบบ row-level ได้, ยอดซ้าย/ขวาอัปเดตตาม edits, confirm ส่งเข้า SML เป็นสองชั้น, audit ใช้ dialog เปรียบเทียบเดิม -> ใหม่)
 - Typography primitives (`SectionTitle`, `DocCode`, `Money`, ...) รวมอยู่ที่ `frontend/src/components/ui/typography.tsx`
 - Mobile responsive: 44px tap target, dialogs fullScreen บน xs, DataGrid ถูกแทนด้วย card view บน xs
 - Accessibility: skip-link, focus ring, `prefers-reduced-motion`, axe-core smoke 0 violations
@@ -25,7 +25,7 @@
   - `npm run build`: Pass
   - `go test ./...`: Pass
   - Playwright + axe-core (`frontend/tests/e2e/a11y.spec.ts`): 0 violations
-  - Browser visual: light + dark mode toggle verified ผ่าน cloudflare quick tunnel
+  - Deploy smoke ผ่าน cloudflare quick tunnel ล่าสุด
 
 ## ใช้ทำอะไร
 
@@ -39,8 +39,11 @@
 - เลือกบิลจากตารางใน `/bulk-edit`
 - ตั้งค่าลูกหนี้ใหม่, ชุดเอกสารใหม่, ประเภทขาย, ประเภทภาษี, หมายเหตุต่อบิล (settings dialog)
 - ลบ/เพิ่มรายการสินค้าแบบต่อบิลใน preview dialog (trash/restore + add line + unit dropdown จาก `ic_unit_use`)
+- ปรับจำนวนสินค้าใน preview ต่อบรรทัดด้วย `rowOrder` เพื่อไม่แก้ผิดแถวเมื่อมี item code ซ้ำ
 - Preview การเปลี่ยนแปลงก่อนส่งเข้า SML
-- Confirm อีกชั้นก่อน real write
+- Confirm อีกชั้นก่อน real write และเห็น progress ระหว่างส่งเข้า SML
+- Retry เฉพาะบิลที่ failed/skipped จาก batch เดิมได้ โดยไม่แตะบิลที่ applied แล้ว
+- ออกเลขเอกสารใหม่โดยตรวจซ้ำกับ `ic_trans.doc_no` ของ sales `trans_flag=44` แบบ global และข้ามเลขที่ถูกใช้แล้วอัตโนมัติ
 - บันทึก snapshot/audit และ rollback ได้โดย Admin
 - ดู history และ technical JSON diff ใน `/audit`
 - ตรวจฐานและติดตั้งตารางระบบใน `/system/status` สำหรับ Admin
@@ -82,12 +85,15 @@ Login
   -> Backend preview-change validates and calculates per bill
   -> Preview dialog shows document queue and change summary
   -> Confirm send to SML
-  -> Backend locks document, snapshots original rows, writes in transaction
-  -> Batch/audit status updated
+  -> Backend starts async reflow batch and inserts pending items
+  -> UI polls progress while backend locks, snapshots, and writes each bill sequentially
+  -> Batch/audit status updated; retry failed/skipped only if partial
   -> Admin can rollback from /audit
 ```
 
 การ apply เป็นการแก้เอกสารเดิมใน SML ไม่ใช่สร้างเอกสารใหม่แยกชุด โดยระบบ update `doc_no` ใน `ic_trans` และ `ic_trans_detail` ให้เป็นเลขใหม่ตาม preview
+
+Bulk apply v1 ใช้ polling แทน SSE/WebSocket เพื่อให้เสถียรผ่าน nginx และ Cloudflare quick tunnel. Endpoint sync เดิมยังอยู่เพื่อ backward compatibility แต่ frontend ปัจจุบันใช้ async batch เป็นหลัก
 
 ## Search Syntax
 
@@ -174,8 +180,8 @@ http://127.0.0.1:3000/
 
 Dev login ในฐาน staging ปัจจุบัน:
 
-- Code: `EMP001`
-- Password: `1234`
+- Code: `001`
+- Password: `001`
 
 ## API Surface หลัก
 
@@ -197,7 +203,10 @@ Documents:
 - `GET /api/v1/documents/:docNo/details`
 - `POST /api/v1/documents/items` — รับ `{docNos:[...]}` คืนรายการสินค้า (unique item_code) ที่อยู่ในบิลที่ระบุ
 - `POST /api/v1/documents/bulk/preview-change`
-- `POST /api/v1/documents/bulk/apply-change`
+- `POST /api/v1/documents/bulk/apply-change/start` — เริ่ม async batch แล้วคืน `batchId`, `batchNo`
+- `GET /api/v1/documents/bulk/batches/:batchId` — ดู progress/counts/items ล่าสุด
+- `POST /api/v1/documents/bulk/batches/:batchId/retry-failed` — สร้าง batch ใหม่จาก failed/skipped items เท่านั้น
+- `POST /api/v1/documents/bulk/apply-change` — sync compatibility endpoint
 - `POST /api/v1/documents/rollback`
 - `GET /api/v1/documents/running-number?formatCode=`
 
@@ -243,7 +252,7 @@ GOCACHE="$PWD/.gocache" GOPATH="$PWD/.gopath" go test ./...
 - Staging/production-scale test กับข้อมูล 1,000 / 10,000 / 100,000 บิล
 - Multi-user conflict/stress test
 - Full E2E seed/apply/rollback test ที่ repeat ได้
-- Password-at-rest hardening สำหรับ saved DB config
+- Secret rotation/runbook สำหรับ `.env` และ production deploy
 - Monitoring/alerting on production (prometheus/grafana profile พร้อมใน `docker-compose.yml`)
 
 Deploy/runbook สำหรับฝั่งลูกค้า: ใช้ [`docs/INSTALL_UBUNTU.md`](docs/INSTALL_UBUNTU.md)

@@ -28,6 +28,9 @@ go run ./cmd/server
 - App tables use prefix `nsi_`
 - SML-owned tables are not migrated by this app
 - Database connection config is **env-only** (`SML_DB_*`); there is no runtime API to change it
+- Bulk apply ปัจจุบันใช้ async batch: insert `pending` items, process ทีละบิล, update progress/counts ลง `nsi_reflow_batches` และ `nsi_reflow_batch_items`
+- Running number allocator ตรวจเลขซ้ำกับ `ic_trans.doc_no` ของ sales `trans_flag=44` แบบ global และกันเลขซ้ำใน request เดียวกัน
+- Detail line payload ส่ง `rowOrder` กลับ frontend และ bulk `perDocEdits` รองรับ `lineQtyEdits` เพื่อแก้จำนวนเฉพาะบรรทัดจริง
 
 ## Main Endpoints
 
@@ -49,7 +52,10 @@ Documents:
 - `GET /api/v1/documents/:docNo/details`
 - `POST /api/v1/documents/items` — body `{ "docNos": ["..."] }` (≤ 500). ตอบ unique item_code + name + unitCode + docCount จาก `ic_trans_detail`
 - `POST /api/v1/documents/bulk/preview-change`
-- `POST /api/v1/documents/bulk/apply-change`
+- `POST /api/v1/documents/bulk/apply-change/start` — เริ่ม async batch แล้วคืน `batchId`, `batchNo`
+- `GET /api/v1/documents/bulk/batches/:batchId` — คืน status, counts, และ items ล่าสุด
+- `POST /api/v1/documents/bulk/batches/:batchId/retry-failed` — สร้าง batch ใหม่จาก failed/skipped items ของ batch เดิม
+- `POST /api/v1/documents/bulk/apply-change` — sync compatibility endpoint
 - `POST /api/v1/documents/rollback`
 - `GET /api/v1/documents/running-number?formatCode=`
 
@@ -88,6 +94,9 @@ Invalid range/list syntax falls back to the normal fuzzy search path.
 
 - `removeItemCodes` ต่อบิล: ลบเฉพาะ row ของบิลนั้น
 - `addedLines`: เพิ่มรายการสินค้าใหม่ (`itemCode`, `itemName`, `unitCode`, `qty`, `price`, `discount`, optional `whCode`/`shelfCode`)
+- `lineQtyEdits`: แก้จำนวนด้วย `{ rowOrder, qty }`; backend validate `qty > 0`, recompute totals/VAT, และ apply เฉพาะ row นั้น
+- Frontend ปัจจุบันส่งจริงผ่าน `bulk/apply-change/start` ด้วย payload เดียวกับ sync endpoint
+- `retry-failed` โหลด request เดิมจาก batch, filter เฉพาะ failed/skipped docNos, filter `perDocEdits` ให้ตรงรายการที่จะ retry, และ clear `docNoOverrides` เพื่อให้ออกเลขใหม่รอบถัดไป
 
 ### Clone-template insert
 

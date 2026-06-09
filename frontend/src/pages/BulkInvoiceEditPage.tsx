@@ -20,7 +20,6 @@ import {
   Paper,
   Slide,
   Stack,
-  Tab,
   Table,
   TableBody,
   Tooltip,
@@ -28,25 +27,25 @@ import {
   TableContainer,
   TableHead,
   TableRow,
-  Tabs,
   TextField,
   Typography,
   useMediaQuery,
 } from "@mui/material";
 import type { GridColDef, GridRowSelectionModel } from "@mui/x-data-grid";
 import { useSearchParams } from "react-router-dom";
-import { AlertTriangle, ChevronLeft, ChevronRight, HelpCircle, Plus, RefreshCw, RotateCcw, Search, Trash2, X } from "lucide-react";
+import { CalendarDays, ChevronLeft, ChevronRight, HelpCircle, Plus, RefreshCw, RotateCcw, Search, Trash2, X } from "lucide-react";
 import type {
+  BulkApplyBatchProgress,
   BulkDocumentChangeItem,
   BulkDocumentChangeRequest,
   BulkDocumentChangeResult,
-  BulkPreviewFilter,
   DatabaseStatus,
   DocEdit,
   DocFormat,
   DocumentChangePreview,
   DocumentDetailLine,
   DocumentSummary,
+  LineEdit,
   NewLineInput,
   Option,
   PagedDocuments,
@@ -71,7 +70,7 @@ import {
   taxTypeLabels,
   valueChanged,
 } from "../lib/format";
-import { AppButton, EmptyState, MetricValue, PageLoading, StatusBadge } from "../components/ui";
+import { AppButton, EmptyState, PageLoading, StatusBadge } from "../components/ui";
 import { DocCode, EmphasisText, Money, SectionTitle, compactActionButtonSx } from "../components/ui/typography";
 import {
   DocumentFact,
@@ -90,8 +89,150 @@ const isoDate = (d: Date) => {
   const day = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
 };
+
+function formatFilterDate(value: string) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return value;
+  const [, year, month, day] = match;
+  return `${day}/${month}/${year}`;
+}
+
+function parseFilterDate(value: string) {
+  const trimmed = value.trim();
+  const slashMatch = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(trimmed);
+  const compactMatch = /^(\d{2})(\d{2})(\d{4})$/.exec(trimmed);
+  const match = slashMatch || compactMatch;
+  if (!match) return "";
+
+  const day = Number(match[1]);
+  const month = Number(match[2]);
+  const year = Number(match[3]);
+  const parsed = new Date(year, month - 1, day);
+  if (
+    parsed.getFullYear() !== year ||
+    parsed.getMonth() !== month - 1 ||
+    parsed.getDate() !== day
+  ) {
+    return "";
+  }
+
+  return isoDate(parsed);
+}
+
+function normalizeFilterDateInput(value: string) {
+  return value.replace(/[^\d/]/g, "").slice(0, 10);
+}
+
+function DateFilterField({
+  label,
+  onChange,
+  value,
+}: {
+  label: string;
+  onChange: (value: string) => void;
+  value: string;
+}) {
+  const [displayValue, setDisplayValue] = useState(() => formatFilterDate(value));
+  const nativeInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    setDisplayValue(formatFilterDate(value));
+  }, [value]);
+
+  function commitDisplayValue(nextValue = displayValue) {
+    const parsed = parseFilterDate(nextValue);
+    if (!parsed) {
+      setDisplayValue(formatFilterDate(value));
+      return;
+    }
+    setDisplayValue(formatFilterDate(parsed));
+    if (parsed !== value) onChange(parsed);
+  }
+
+  function updateDisplayValue(rawValue: string) {
+    const nextValue = normalizeFilterDateInput(rawValue);
+    setDisplayValue(nextValue);
+    const parsed = parseFilterDate(nextValue);
+    if (parsed) {
+      setDisplayValue(formatFilterDate(parsed));
+      if (parsed !== value) onChange(parsed);
+    }
+  }
+
+  function openNativePicker() {
+    const picker = nativeInputRef.current;
+    if (!picker) return;
+    if (typeof picker.showPicker === "function") {
+      picker.showPicker();
+      return;
+    }
+    picker.click();
+  }
+
+  return (
+    <TextField
+      label={label}
+      onBlur={() => commitDisplayValue()}
+      onChange={(event) => updateDisplayValue(event.target.value)}
+      placeholder="dd/MM/yyyy"
+      size="small"
+      value={displayValue}
+      slotProps={{
+        htmlInput: {
+          inputMode: "numeric",
+          pattern: "\\d{2}/\\d{2}/\\d{4}",
+        },
+        input: {
+          endAdornment: (
+            <InputAdornment position="end">
+              <Box component="span" sx={{ display: "inline-flex", position: "relative" }}>
+                <IconButton
+                  aria-label={`เปิดปฏิทิน${label}`}
+                  edge="end"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={openNativePicker}
+                  size="small"
+                >
+                  <CalendarDays size={16} />
+                </IconButton>
+                <Box
+                  component="input"
+                  ref={nativeInputRef}
+                  aria-hidden
+                  tabIndex={-1}
+                  type="date"
+                  value={value}
+                  onChange={(event) => {
+                    onChange(event.target.value);
+                    setDisplayValue(formatFilterDate(event.target.value));
+                  }}
+                  sx={{ height: 1, opacity: 0, pointerEvents: "none", position: "absolute", right: 0, top: 0, width: 1 }}
+                />
+              </Box>
+            </InputAdornment>
+          ),
+        },
+      }}
+    />
+  );
+}
 const today = new Date();
 const initialFromDate = isoDate(new Date(today.getFullYear(), today.getMonth(), 1));
+
+type PerDocEditState = {
+  removed: Set<string>;
+  added: NewLineInput[];
+  lineEdits: Map<number, LineEditDraft>;
+  remark?: string;
+};
+
+type LineEditDraft = {
+  qty?: string;
+  price?: string;
+  discount?: string;
+};
+
+const emptyPerDocEdit = (): PerDocEditState => ({ removed: new Set<string>(), added: [], lineEdits: new Map<number, LineEditDraft>() });
 const initialToDate = isoDate(today);
 
 // Silence unused import warnings for helpers re-exported for parity with previous inline implementation.
@@ -139,14 +280,13 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
   const [customerSearch, setCustomerSearch] = useState("");
   // Per-doc line edits (remove existing + add new) authored in the preview screen.
   // Map key = original docNo (matches BulkDocumentChangeItem.docNo).
-  const [perDocEdits, setPerDocEdits] = useState<Map<string, { removed: Set<string>; added: NewLineInput[] }>>(new Map());
-  // Sentinel for bulk-edit: vatType=-1 → "คงค่าเดิมของแต่ละบิล".
-  // inquiryType ถูกตัดออกจาก UI — ส่ง 0 (sentinel) ตลอด เพื่อให้ backend ใช้ค่าเดิมของแต่ละบิล.
-  const inquiryType = 0;
+  const [perDocEdits, setPerDocEdits] = useState<Map<string, PerDocEditState>>(new Map());
+  const [docNoOverrides, setDocNoOverrides] = useState<Record<string, string>>({});
+  const [excludedDocNos, setExcludedDocNos] = useState<Set<string>>(new Set());
+  // Sentinels for bulk-edit: -1 → "คงค่าเดิมของแต่ละบิล".
+  const [inquiryType, setInquiryType] = useState(-1);
   const [vatType, setVatType] = useState(-1);
-  const [remark, setRemark] = useState("");
   const [preview, setPreview] = useState<BulkDocumentChangeResult | null>(null);
-  const [previewFilter, setPreviewFilter] = useState<BulkPreviewFilter>("all");
   const [previewDialogOpen, setPreviewDialogOpen] = useState(false);
   const [previewDialogDocNo, setPreviewDialogDocNo] = useState("");
   const [loading, setLoading] = useState(true);
@@ -154,11 +294,14 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
   const [customerSearching, setCustomerSearching] = useState(false);
   const [message, setMessage] = useState("");
   const [confirmApplyOpen, setConfirmApplyOpen] = useState(false);
-  const [confirmApplyText, setConfirmApplyText] = useState("");
+  const [finalApplyConfirmOpen, setFinalApplyConfirmOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [previewing, setPreviewing] = useState(false);
   const [detailDocNo, setDetailDocNo] = useState("");
   const [detailOpen, setDetailOpen] = useState(false);
+  const [applyProgress, setApplyProgress] = useState<BulkApplyBatchProgress | null>(null);
+  const [applyProgressOpen, setApplyProgressOpen] = useState(false);
+  const handledApplyBatchesRef = useRef<Set<number>>(new Set());
 
   const items = documents?.items || [];
   const detailDocument = items.find((item) => item.docNo === detailDocNo) || items.find((item) => selectedDocNos.includes(item.docNo)) || items[0] || null;
@@ -170,28 +313,56 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
   const hasAnyChange =
     !!selectedCustomer ||
     !!selectedFormat ||
-    vatType !== -1 ||
-    remark.trim() !== "";
-  const canPreview = selectedDocNos.length > 0 && hasAnyChange;
+    inquiryType !== -1 ||
+    vatType !== -1;
+  const canPreview = selectedDocNos.length > 0;
   const workflowHint = canPreview
     ? `พร้อมพรีวิว ${selectedDocNos.length} บิล (ฟิลด์ที่เว้นว่าง = ใช้ค่าเดิมของแต่ละบิล)`
     : selectedDocNos.length
-      ? "ระบุการแก้ไขอย่างน้อย 1 รายการ (ลูกหนี้ / ชุดเลข / ประเภทภาษี / หมายเหตุ)"
+      ? "กดพรีวิวเพื่อแก้หมายเหตุรายบิล หรือเลือกการแก้ไขหัวบิลก่อน"
       : "เลือกบิลจากตารางก่อน แล้วค่อยตั้งค่าการแก้ไข";
-  const readyPreviewCount = preview?.items.filter((item) => item.status === "ready").length || 0;
-  const warningPreviewCount = preview?.items.filter((item) => item.status === "warning").length || 0;
-  const blockedPreviewCount = preview?.items.filter((item) => item.status === "blocked" || item.status === "failed" || item.status === "skipped").length || 0;
+  const autoExcludedPaymentDocNos = useMemo(() => {
+    const next = new Set<string>();
+    if (!preview) return next;
+    preview.items.forEach((item) => {
+      if ((item.status !== "ready" && item.status !== "warning") || !item.preview?.paymentBefore) return;
+      const totals = recomputedTotalsForItem(item, perDocEdits);
+      if (evaluatePaymentPreviewPolicy(item.preview.paymentBefore, totals.totalAmount).blockedReason) {
+        next.add(item.docNo);
+      }
+    });
+    return next;
+  }, [preview, perDocEdits]);
+  const effectiveExcludedDocNos = useMemo(() => {
+    const next = new Set(excludedDocNos);
+    autoExcludedPaymentDocNos.forEach((docNo) => next.add(docNo));
+    return next;
+  }, [excludedDocNos, autoExcludedPaymentDocNos]);
+  const activePreviewItems = preview?.items.filter((item) => !effectiveExcludedDocNos.has(item.docNo)) || [];
+  const readyPreviewCount = activePreviewItems.filter((item) => item.status === "ready").length || 0;
+  const warningPreviewCount = activePreviewItems.filter((item) => item.status === "warning").length || 0;
+  const missingCustomerWarningItems = activePreviewItems.filter((item) => item.status === "warning" && isMissingCustomerWarning(item.message));
+  const blockedPreviewCount = activePreviewItems.filter((item) => item.status === "blocked" || item.status === "failed" || item.status === "skipped").length || 0;
   const writablePreviewCount = readyPreviewCount + warningPreviewCount;
+  const excludedPreviewCount = preview?.items.filter((item) => effectiveExcludedDocNos.has(item.docNo)).length || 0;
+  const hasActivePerDocChanges = Array.from(perDocEdits.keys()).some((docNo) => !effectiveExcludedDocNos.has(docNo));
+  const hasApplyChanges = hasAnyChange || hasActivePerDocChanges;
+  const applyIsActive = Boolean(applyProgress && isActiveBatchStatus(applyProgress.status));
 
   // Per-doc edit helpers
   function setPerDocEditEntry(
     docNo: string,
-    updater: (current: { removed: Set<string>; added: NewLineInput[] }) => { removed: Set<string>; added: NewLineInput[] },
+    updater: (current: PerDocEditState) => PerDocEditState,
   ) {
     setPerDocEdits((m) => {
       const next = new Map(m);
-      const cur = next.get(docNo) ?? { removed: new Set<string>(), added: [] };
-      next.set(docNo, updater(cur));
+      const cur = next.get(docNo) ?? emptyPerDocEdit();
+      const updated = updater(cur);
+      if (updated.removed.size === 0 && updated.added.length === 0 && updated.lineEdits.size === 0 && updated.remark === undefined) {
+        next.delete(docNo);
+      } else {
+        next.set(docNo, updated);
+      }
       return next;
     });
   }
@@ -205,15 +376,28 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
     return remainingCount + addedCount;
   }
   const hasEmptyAfterEdits = Boolean(preview && preview.items.some((item) => {
+    if (effectiveExcludedDocNos.has(item.docNo)) return false;
     if (item.status !== "ready" && item.status !== "warning") return false;
     return effectiveLineCount(item) === 0;
   }));
-  const readyToApply = Boolean(isAdmin && preview && writablePreviewCount > 0 && busy === false && !hasEmptyAfterEdits);
-  const visiblePreviewItems = preview?.items.filter((item) => {
-    if (previewFilter === "all") return true;
-    if (previewFilter === "blocked") return item.status === "blocked" || item.status === "failed" || item.status === "skipped";
-    return item.status === "ready" || item.status === "warning";
-  }) || [];
+  const hasInvalidLineEdits = Boolean(preview && preview.items.some((item) => {
+    if (effectiveExcludedDocNos.has(item.docNo)) return false;
+    if ((item.status !== "ready" && item.status !== "warning") || !item.preview) return false;
+    const edit = perDocEdits.get(item.docNo);
+    if (!edit) return false;
+    return item.preview.remainingLines.some((line) => {
+      if (edit.removed.has(line.itemCode)) return false;
+      const lineEdit = edit.lineEdits.get(line.rowOrder);
+      return Boolean(lineEdit && lineEditError(line, lineEdit));
+    });
+  }));
+  const hasPaymentAfterEditsBlocked = Boolean(preview && preview.items.some((item) => {
+    if (effectiveExcludedDocNos.has(item.docNo)) return false;
+    if ((item.status !== "ready" && item.status !== "warning") || !item.preview?.paymentBefore) return false;
+    const totals = recomputedTotalsForItem(item, perDocEdits);
+    return Boolean(evaluatePaymentPreviewPolicy(item.preview.paymentBefore, totals.totalAmount).error);
+  }));
+  const readyToApply = Boolean(isAdmin && preview && hasApplyChanges && writablePreviewCount > 0 && blockedPreviewCount === 0 && busy === false && !hasEmptyAfterEdits && !hasInvalidLineEdits && !hasPaymentAfterEditsBlocked);
   const customerQuery = customerSearch.trim();
   const showCustomerEmpty = customerQuery.length >= 2 && !selectedCustomer && !customerSearching && customers.length === 0;
   const documentGridColumns = useMemo<GridColDef<DocumentSummary>[]>(() => [
@@ -295,21 +479,6 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
     void loadInitial();
   }, []);
 
-  // เมื่อผู้ใช้เปลี่ยน "จากวันที่" หรือ "ถึงวันที่" ให้โหลดรายการใหม่ทันที
-  // (debounce 250ms เผื่อ keyboard typing) — ข้าม run แรกเพราะ loadInitial
-  // จัดการการโหลดครั้งแรกอยู่แล้ว
-  const initialLoadRef = useRef(true);
-  useEffect(() => {
-    if (initialLoadRef.current) {
-      initialLoadRef.current = false;
-      return;
-    }
-    if (!fromDate || !toDate) return;
-    const timer = window.setTimeout(() => void loadDocuments(search, fromDate, toDate), 250);
-    return () => window.clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fromDate, toDate]);
-
   useEffect(() => {
     const q = customerSearch.trim();
     if (selectedCustomer || q.length < 2) {
@@ -319,6 +488,13 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
     const timer = window.setTimeout(() => void searchCustomers(q), 250);
     return () => window.clearTimeout(timer);
   }, [customerSearch, selectedCustomer]);
+
+  useEffect(() => {
+    if (!applyProgress || !isActiveBatchStatus(applyProgress.status)) return;
+    const timer = window.setInterval(() => void refreshApplyProgress(applyProgress.batchId), 1000);
+    return () => window.clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [applyProgress?.batchId, applyProgress?.status]);
 
   useEffect(() => {
     if (selectedDocNos.length === 0) {
@@ -363,7 +539,7 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
     setLoading(true);
     setMessage("");
     setPreview(null);
-    setPreviewFilter("all");
+    setDocNoOverrides({});
     const nextParams = new URLSearchParams();
     nextParams.set("from", nextFrom);
     nextParams.set("to", nextTo);
@@ -384,7 +560,6 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
     if (!search) return;
     setSearch("");
     resetPreview();
-    await loadDocuments("");
   }
 
   async function refreshDocumentsAfterApply(successMessage: string) {
@@ -394,14 +569,33 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
       setDocuments(response.data);
       setSelectedDocNos([]);
       setPreview(null);
-      setPreviewFilter("all");
       setPreviewDialogOpen(false);
       setPreviewDialogDocNo("");
+      setDocNoOverrides({});
+      setExcludedDocNos(new Set());
       setMessage(successMessage);
     } else {
       setMessage(`${successMessage} แต่โหลดรายการล่าสุดไม่สำเร็จ: ${response.error?.detail || response.message || "ไม่ทราบสาเหตุ"}`);
     }
     setLoading(false);
+  }
+
+  async function refreshApplyProgress(batchId: number) {
+    const response = await apiGet<BulkApplyBatchProgress>(`/api/v1/documents/bulk/batches/${batchId}`);
+    if (!response.success || !response.data) {
+      setMessage(response.error?.detail || response.message || "โหลดสถานะส่งเข้า SML ไม่สำเร็จ");
+      return;
+    }
+    setApplyProgress(response.data);
+    if (!isActiveBatchStatus(response.data.status) && !handledApplyBatchesRef.current.has(response.data.batchId)) {
+      handledApplyBatchesRef.current.add(response.data.batchId);
+      setBusy(false);
+      setPreview(response.data);
+      setPreviewDialogDocNo(response.data.items.find((item) => item.status === "applied")?.docNo || response.data.items[0]?.docNo || "");
+      const summary = `ส่งเข้า SML สำเร็จ ${response.data.appliedCount} บิล${response.data.failedCount ? `, ส่งไม่สำเร็จ ${response.data.failedCount} บิล` : ""}${response.data.skippedCount ? `, ยังไม่ดำเนินการ ${response.data.skippedCount} บิล` : ""}`;
+      toast(summary, response.data.failedCount || response.data.skippedCount || response.data.blockedCount ? "warning" : "success");
+      await refreshDocumentsAfterApply(summary);
+    }
   }
 
   async function searchCustomers(q = customerSearch) {
@@ -429,6 +623,8 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
     setPreview(null);
     setPreviewDialogOpen(false);
     setPreviewDialogDocNo("");
+    setDocNoOverrides({});
+    setExcludedDocNos(new Set());
     setMessage("");
   }
 
@@ -443,8 +639,8 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
     setSelectedCustomer("");
     setCustomerSearch("");
     setPerDocEdits(new Map());
-    setRemark("");
     setSelectedFormat("");
+    setInquiryType(-1);
     setVatType(-1);
   }
 
@@ -461,44 +657,61 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
     });
   }
 
-  function buildBulkRequest(): BulkDocumentChangeRequest {
+  function buildBulkRequest(overrides: Record<string, string> = docNoOverrides, excluded: Set<string> = effectiveExcludedDocNos): BulkDocumentChangeRequest {
+    const activeDocNos = selectedDocNos.filter((docNo) => !excluded.has(docNo));
     const perDocEditsArr: DocEdit[] = [];
     perDocEdits.forEach((edits, docNo) => {
+      if (!activeDocNos.includes(docNo)) return;
       const removed = Array.from(edits.removed);
-      if (removed.length === 0 && edits.added.length === 0) return;
+      const lineEdits: LineEdit[] = Array.from(edits.lineEdits.entries())
+        .map(([rowOrder, edit]) => {
+          const payload: LineEdit = { rowOrder };
+          if (edit.qty !== undefined) payload.qty = edit.qty.trim();
+          if (edit.price !== undefined) payload.price = edit.price.trim();
+          if (edit.discount !== undefined) payload.discount = edit.discount.trim();
+          return payload;
+        })
+        .filter((edit) => edit.rowOrder > 0 && (edit.qty !== undefined || edit.price !== undefined || edit.discount !== undefined));
+      if (removed.length === 0 && edits.added.length === 0 && lineEdits.length === 0 && edits.remark === undefined) return;
       perDocEditsArr.push({
         docNo,
         removeItemCodes: removed,
         addedLines: edits.added,
+        ...(lineEdits.length > 0 ? { lineEdits } : {}),
+        ...(edits.remark !== undefined ? { remark: edits.remark } : {}),
       });
     });
+    const overrideEntries = Object.entries(overrides).filter(([docNo, newDocNo]) => activeDocNos.includes(docNo) && newDocNo);
+    const filteredOverrides = Object.fromEntries(overrideEntries);
     return {
-      docNos: selectedDocNos,
+      docNos: activeDocNos,
       docFormatCode: selectedFormat,
       customerCode: selectedCustomer,
       inquiryType,
       vatType,
-      remark,
+      remark: "",
       removeItemCodes: [],
       ...(perDocEditsArr.length > 0 ? { perDocEdits: perDocEditsArr } : {}),
+      ...(overrideEntries.length > 0 ? { docNoOverrides: filteredOverrides } : {}),
     };
   }
 
   async function previewBulk() {
     if (!canPreview) {
-      setMessage("เลือกบิล ชุดเลขเอกสาร และลูกหนี้ก่อนพรีวิว");
+      setMessage("เลือกบิลอย่างน้อย 1 บิลก่อนพรีวิว");
       return;
     }
     setBusy(true);
     setPreviewing(true);
     setMessage("");
+    setDocNoOverrides({});
     try {
-      const response = await apiPost<BulkDocumentChangeResult>("/api/v1/documents/bulk/preview-change", buildBulkRequest());
+      const response = await apiPost<BulkDocumentChangeResult>("/api/v1/documents/bulk/preview-change", buildBulkRequest({}, new Set()));
       if (response.success && response.data) {
         // Reset per-doc edits so the new preview starts from a clean slate.
         setPerDocEdits(new Map());
+        setExcludedDocNos(new Set());
         setPreview(response.data);
-        setPreviewFilter("all");
         setPreviewDialogDocNo(getInitialReviewDocNo(response.data.items));
         setPreviewDialogOpen(true);
       }
@@ -519,7 +732,7 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
     try {
       // Step 1: get a fresh next doc_no from the DB (reads latest ic_trans)
       const rnResp = await apiGet<{ nextDocNo: string; latestDocNo: string; formatCode: string }>(
-        `/api/v1/documents/running-number?formatCode=${encodeURIComponent(formatCode)}`,
+        `/api/v1/documents/running-number?formatCode=${encodeURIComponent(formatCode)}&sourceDocNo=${encodeURIComponent(docNo)}`,
       );
       if (!rnResp.success || !rnResp.data?.nextDocNo) {
         setMessage(rnResp.error?.detail || "ไม่สามารถออกเลขเอกสารใหม่ได้");
@@ -550,8 +763,14 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
         return { ...prev, items, readyCount, blockedCount };
       });
       if (updatedItem.status === "ready" || updatedItem.status === "warning") {
+        setDocNoOverrides((current) => ({ ...current, [docNo]: updatedItem.newDocNo || nextDocNo }));
         toast(`ออกเลขใหม่ ${updatedItem.newDocNo} สำเร็จ`, "success");
       } else {
+        setDocNoOverrides((current) => {
+          const next = { ...current };
+          delete next[docNo];
+          return next;
+        });
         toast(updatedItem.message || "ออกเลขใหม่แล้วแต่ยังมีปัญหา", "warning");
       }
     } finally {
@@ -563,20 +782,37 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
     if (!preview || !readyToApply || !isAdmin) return;
     setBusy(true);
     setMessage("");
-    const response = await apiPost<BulkDocumentChangeResult>("/api/v1/documents/bulk/apply-change", buildBulkRequest());
+    const response = await apiPost<BulkApplyBatchProgress>("/api/v1/documents/bulk/apply-change/start", buildBulkRequest());
     if (response.success && response.data) {
-      setPreview(response.data);
-      setPreviewDialogDocNo(response.data.items.find((item) => item.status === "applied")?.docNo || response.data.items[0]?.docNo || "");
-      await refreshDocumentsAfterApply(`ส่งเข้า SML สำเร็จ ${response.data.appliedCount} บิล${response.data.failedCount ? `, ส่งไม่สำเร็จ ${response.data.failedCount} บิล` : ""}${response.data.skippedCount ? `, ยังไม่ดำเนินการ ${response.data.skippedCount} บิล` : ""}`);
+      handledApplyBatchesRef.current.delete(response.data.batchId);
+      setApplyProgress(response.data);
+      setApplyProgressOpen(true);
       setConfirmApplyOpen(false);
-      setConfirmApplyText("");
-      toast(`ส่งเข้า SML สำเร็จ ${response.data.appliedCount} บิล`, response.data.failedCount ? "warning" : "success");
+      setFinalApplyConfirmOpen(false);
+      toast(`เริ่มส่งเข้า SML ${response.data.totalCount} บิล`, "success");
     } else {
       const detail = response.error?.detail || response.message || "ส่งหลายบิลเข้า SML ไม่สำเร็จ";
       setMessage(detail);
       toast(detail, "error");
+      setBusy(false);
     }
-    setBusy(false);
+  }
+
+  async function retryFailedBulk(batchId: number) {
+    setBusy(true);
+    setMessage("");
+    const response = await apiPost<BulkApplyBatchProgress>(`/api/v1/documents/bulk/batches/${batchId}/retry-failed`, {});
+    if (response.success && response.data) {
+      handledApplyBatchesRef.current.delete(response.data.batchId);
+      setApplyProgress(response.data);
+      setApplyProgressOpen(true);
+      toast(`เริ่มส่งซ้ำ ${response.data.totalCount} บิลที่ไม่สำเร็จ`, "success");
+    } else {
+      const detail = response.error?.detail || response.message || "ส่งซ้ำเฉพาะบิลที่ไม่สำเร็จไม่ได้";
+      setMessage(detail);
+      toast(detail, "error");
+      setBusy(false);
+    }
   }
 
   if (loading && !documents) return <PageLoading title="กำลังโหลดรายการบิลสำหรับแก้ไขบิล" />;
@@ -587,7 +823,6 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
 
       <Box sx={{ alignItems: { sm: "flex-end" }, display: "flex", flexDirection: { xs: "column", sm: "row" }, gap: 1, justifyContent: "space-between" }}>
         <Box>
-          <SectionTitle level="h2">แก้ไขบิลครั้งละหลายใบ</SectionTitle>
           <Typography color="text.secondary" variant="body2">
             เลือกบิลในตารางด้านล่าง แล้วกด “ตั้งค่าและพรีวิว” เพื่อเปลี่ยนลูกค้า / ชุดเอกสาร หรือลบสินค้าพร้อมกันหลายใบ
           </Typography>
@@ -600,18 +835,14 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
       <Paper variant="outlined" sx={{ minWidth: 0, overflow: "hidden" }}>
         <Stack spacing={{ xs: 1.25, sm: 1.5 }} sx={{ p: { xs: 1.25, sm: 1.5 } }}>
           <Box sx={{ alignItems: "flex-start", display: "grid", gap: 1, gridTemplateColumns: { xs: "1fr 1fr", lg: "150px 150px minmax(220px, 1fr) auto" }, minWidth: 0 }}>
-            <TextField
+            <DateFilterField
               label="จากวันที่"
-              onChange={(event) => { setFromDate(event.target.value); resetPreview(); }}
-              size="small"
-              type="date"
+              onChange={(value) => { setFromDate(value); resetPreview(); }}
               value={fromDate}
             />
-            <TextField
+            <DateFilterField
               label="ถึงวันที่"
-              onChange={(event) => { setToDate(event.target.value); resetPreview(); }}
-              size="small"
-              type="date"
+              onChange={(value) => { setToDate(value); resetPreview(); }}
               value={toDate}
             />
             <TextField
@@ -619,7 +850,7 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
               label="ค้นหา"
               onChange={(event) => setSearch(event.target.value)}
               onKeyDown={(event) => { if (event.key === "Enter") void loadDocuments(); }}
-              placeholder="เลขบิล / รหัสลูกค้า / หมายเหตุ  (กด Ctrl+K, Enter เพื่อค้นหา)"
+              placeholder="เลขบิล / รหัสลูกค้า / หมายเหตุ  (กด Ctrl+K, Enter หรือปุ่มค้นหา)"
               size="small"
               sx={{ gridColumn: { xs: "1 / -1", lg: "auto" } }}
               value={search}
@@ -650,13 +881,9 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
               }}
             />
             <Stack direction="row" spacing={0.5} sx={{ alignItems: "center", gridColumn: { xs: "1 / -1", lg: "auto" } }}>
-              <Tooltip arrow title="โหลดข้อมูลใหม่">
-                <span>
-                  <IconButton aria-label="โหลดใหม่" disabled={loading} onClick={() => void loadDocuments()} size="medium" sx={{ border: 1, borderColor: "divider", borderRadius: 1, height: 40, width: 40 }}>
-                    <RefreshCw size={16} />
-                  </IconButton>
-                </span>
-              </Tooltip>
+              <AppButton disabled={loading} fullWidth={isMobile} onClick={() => void loadDocuments()} startIcon={<Search size={16} />} tone="primary">
+                ค้นหา
+              </AppButton>
             </Stack>
           </Box>
           {selectedDocNos.length ? (
@@ -668,7 +895,7 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
               selectedFormat={selectedFormat}
               onClear={clearSelection}
               onOpenSettings={() => setSettingsOpen(true)}
-              onPreview={() => void previewBulk()}
+              onPreview={() => setSettingsOpen(true)}
               sticky
             />
           ) : null}
@@ -722,7 +949,7 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
             {!items.length ? <EmptyState title="ไม่พบบิล" description="ลองเปลี่ยนช่วงวันที่หรือคำค้นหา" /> : null}
           </Stack>
         ) : (
-        <Box sx={{ height: "calc(100vh - 244px)", minHeight: 430, minWidth: 0, width: "100%" }}>
+        <Box sx={{ height: selectedDocNos.length ? "calc(100vh - 286px)" : "calc(100vh - 224px)", minHeight: 420, minWidth: 0, width: "100%" }}>
           <Suspense fallback={<LinearProgress />}>
             <LazyDataGrid
               checkboxSelection
@@ -792,7 +1019,7 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
       ) : null}
 
       {settingsOpen ? (
-        <Dialog fullScreen={isMobile} fullWidth maxWidth="sm" open onClose={() => setSettingsOpen(false)}>
+        <Dialog fullScreen={isMobile} fullWidth maxWidth="md" open onClose={() => setSettingsOpen(false)}>
           <DialogTitle sx={{ py: 1.25 }}>
             <Stack direction="row" spacing={1.5} sx={{ alignItems: "center", justifyContent: "space-between", minWidth: 0 }}>
               <SectionTitle level="h2" noWrap>
@@ -804,7 +1031,7 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
           <DialogContent dividers>
             <Stack spacing={1.5}>
               {!selectedDocNos.length ? <Alert severity="error">เลือกบิลอย่างน้อย 1 บิลก่อนตั้งค่าการแก้ไข</Alert> : null}
-              <Box sx={{ display: "grid", gap: 1.25, gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr" } }}>
+              <Box sx={{ display: "grid", gap: 1.5, gridTemplateColumns: { xs: "1fr", md: "1.15fr 0.85fr" } }}>
                 <Autocomplete<Option, false, false, false>
                   filterOptions={(options) => options}
                   getOptionLabel={(option) => `${option.code} - ${option.name}`}
@@ -826,7 +1053,7 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
                   renderInput={(params) => (
                     <TextField
                       {...params}
-                      helperText="เว้นว่างเพื่อใช้ลูกหนี้เดิมของแต่ละบิล"
+                      helperText="ค้นจากรหัสหรือคำใดก็ได้ในชื่อลูกหนี้"
                       label="ลูกหนี้ใหม่"
                       placeholder="พิมพ์รหัสหรือชื่อลูกหนี้"
                       size="small"
@@ -855,6 +1082,7 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
                       </Box>
                     );
                   }}
+                  sx={{ gridColumn: "1 / -1" }}
                   value={selectedCustomerValue}
                 />
                 <TextField
@@ -870,6 +1098,18 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
                   {docFormats.map((item) => <MenuItem key={item.code} value={item.code}>{item.code} - {item.name}</MenuItem>)}
                 </TextField>
                 <TextField
+                  helperText="เว้นว่างเพื่อใช้ประเภทขายเดิม"
+                  label="ประเภทการขาย"
+                  onChange={(event) => { setInquiryType(Number(event.target.value)); resetPreview(); }}
+                  select
+                  size="small"
+                  slotProps={{ inputLabel: { shrink: true }, input: { notched: true }, select: { displayEmpty: true } }}
+                  value={inquiryType}
+                >
+                  <MenuItem value={-1}><Typography color="text.disabled" variant="body2">— กรุณาเลือก (ใช้ค่าเดิมของแต่ละบิล) —</Typography></MenuItem>
+                  {[0, 1, 2, 3].map((value) => <MenuItem key={value} value={value}>{saleTypeLabels[value]}</MenuItem>)}
+                </TextField>
+                <TextField
                   helperText="เว้นว่างเพื่อใช้ประเภทภาษีเดิม"
                   label="ประเภทภาษี"
                   onChange={(event) => { setVatType(Number(event.target.value)); resetPreview(); }}
@@ -881,15 +1121,6 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
                   <MenuItem value={-1}><Typography color="text.disabled" variant="body2">— กรุณาเลือก (ใช้ค่าเดิมของแต่ละบิล) —</Typography></MenuItem>
                   {Object.entries(taxTypeLabels).map(([value, label]) => <MenuItem key={value} value={value}>{label}</MenuItem>)}
                 </TextField>
-                <TextField
-                  label="หมายเหตุใหม่"
-                  minRows={2}
-                  multiline
-                  onChange={(event) => { setRemark(event.target.value); resetPreview(); }}
-                  size="small"
-                  sx={{ gridColumn: "1 / -1" }}
-                  value={remark}
-                />
               </Box>
               <Alert severity={canPreview ? "info" : "warning"}>{canPreview ? "ระบบจะแสดงพรีวิวให้เลือกดูเอกสาร แล้วกดยืนยันส่งเข้า SML ได้ทันที" : workflowHint}</Alert>
             </Stack>
@@ -908,141 +1139,30 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
         />
       ) : null}
 
-      {preview ? (
-        <Paper variant="outlined" sx={{ p: 2 }}>
-          <Stack spacing={2}>
-          <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ justifyContent: "space-between" }}>
-            <Box>
-              <Typography color="text.secondary" variant="body2">3. พรีวิวก่อนส่ง</Typography>
-              <SectionTitle level="h2">พรีวิว {preview.totalCount} บิล</SectionTitle>
-            </Box>
-          </Stack>
-          <Box sx={{ display: "grid", gap: 1.5, gridTemplateColumns: { xs: "1fr", md: "repeat(3, 1fr)" } }}>
-            <MetricValue label="เอกสารทั้งหมด" value={String(preview.totalCount)} helper="ผลจากชุดที่เลือก" />
-            <MetricValue label="ส่งเข้า SML ได้" value={String(writablePreviewCount)} helper="ผ่านพรีวิวและจะอยู่ในรอบยืนยัน" />
-            <MetricValue label="ระบบไม่ส่ง" value={String(blockedPreviewCount)} helper="มีสาเหตุที่ต้องแก้ก่อนส่งใหม่" />
-          </Box>
-          <Tabs value={previewFilter} onChange={(_, value) => setPreviewFilter(value)}>
-            <Tab label={`ทั้งหมด ${preview.totalCount}`} value="all" />
-            <Tab label={`ส่งได้ ${writablePreviewCount}`} value="writable" />
-            <Tab label={`ระบบไม่ส่ง ${blockedPreviewCount}`} value="blocked" />
-          </Tabs>
-          {blockedPreviewCount ? (
-            <Alert icon={<AlertTriangle size={16} />} severity="warning">มีเอกสารที่ระบบไม่ส่งเข้า SML {blockedPreviewCount} บิล ระบบจะส่งเฉพาะ {writablePreviewCount} บิลที่ผ่านพรีวิว</Alert>
-          ) : null}
-          {isMobile ? (
-            <Stack spacing={1}>
-              {visiblePreviewItems.map((item) => (
-                <Card key={item.docNo} variant="outlined">
-                  <CardContent sx={{ p: 1.5, "&:last-child": { pb: 1.5 } }}>
-                    <Stack spacing={1.25}>
-                      <Stack direction="row" sx={{ alignItems: "center", justifyContent: "space-between" }}>
-                        <DocCode value={item.docNo} noWrap />
-                        <Money value={formatMoney(item.preview?.totals.totalAmount || "")} />
-                      </Stack>
-                      <Box sx={{ display: "grid", gap: 1, gridTemplateColumns: "1fr 1fr" }}>
-                        <SummaryLine label="เลขเดิม" value={item.docNo} strong />
-                        <SummaryLine label="เลขใหม่" value={item.newDocNo || "-"} strong />
-                        <SummaryLine label="ลูกหนี้" value={item.preview?.after.customerCode || selectedCustomer || "-"} />
-                        <SummaryLine label="ลบสินค้า" value={(item.removeHits || []).length ? item.removeHits.join(", ") : "-"} />
-                      </Box>
-                      <Typography color="text.secondary" variant="body2">{item.message}</Typography>
-                      <AppButton
-                        fullWidth
-                        onClick={() => {
-                          setPreviewDialogDocNo(item.docNo);
-                          setPreviewDialogOpen(true);
-                        }}
-                        size="small"
-                        type="button"
-                      >
-                        ดูพรีวิว
-                      </AppButton>
-                    </Stack>
-                  </CardContent>
-                </Card>
-              ))}
-              {!visiblePreviewItems.length ? <EmptyState title="ไม่มีรายการในตัวกรองนี้" description="ลองเลือกตัวกรองอื่นเพื่อดูพรีวิว" /> : null}
-            </Stack>
-          ) : (
-          <TableContainer component={Paper} variant="outlined">
-              <Table size="small" sx={{ minWidth: 960 }}>
-              <TableHead>
-                <TableRow>
-                  <TableCell>เลขบิลเดิม</TableCell>
-                  <TableCell>เลขบิลใหม่</TableCell>
-                  <TableCell>ลูกหนี้</TableCell>
-                  <TableCell>ลบสินค้า</TableCell>
-                  <TableCell align="right">ยอดใหม่</TableCell>
-                  <TableCell>หมายเหตุ</TableCell>
-                  <TableCell align="right">ดูพรีวิว</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {visiblePreviewItems.map((item) => (
-                  <TableRow key={item.docNo}>
-                    <TableCell><DocCode value={item.docNo} /></TableCell>
-                    <TableCell>{item.newDocNo || "-"}</TableCell>
-                    <TableCell>{item.preview?.after.customerCode || selectedCustomer || "-"}</TableCell>
-                    <TableCell>{(item.removeHits || []).length ? item.removeHits.join(", ") : "-"}</TableCell>
-                    <TableCell align="right"><Money value={formatMoney(item.preview?.totals.totalAmount || "")} /></TableCell>
-                    <TableCell>{item.message}</TableCell>
-                    <TableCell align="right">
-                      <AppButton
-                        onClick={() => {
-                          setPreviewDialogDocNo(item.docNo);
-                          setPreviewDialogOpen(true);
-                        }}
-                        size="small"
-                        type="button"
-                      >
-                        ดูพรีวิว
-                      </AppButton>
-                    </TableCell>
-                  </TableRow>
-                ))}
-                {!visiblePreviewItems.length ? (
-                  <TableRow>
-                    <TableCell colSpan={7}><EmptyState title="ไม่มีรายการในตัวกรองนี้" description="ลองเลือกตัวกรองอื่นเพื่อดูพรีวิว" /></TableCell>
-                  </TableRow>
-                ) : null}
-              </TableBody>
-            </Table>
-          </TableContainer>
-          )}
-          <Alert
-            severity="warning"
-            action={(
-              <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ width: { xs: "100%", sm: "auto" } }}>
-                <AppButton fullWidth={isMobile} onClick={() => setPreviewDialogOpen(true)}>เปิดพรีวิว</AppButton>
-                {isAdmin ? <AppButton disabled={!readyToApply || busy} fullWidth={isMobile} onClick={() => setPreviewDialogOpen(true)} tone="danger">{busy ? "กำลังส่ง" : "ส่งเข้า SML"}</AppButton> : null}
-              </Stack>
-            )}
-            sx={{ "& .MuiAlert-action": { alignItems: "stretch", pl: { xs: 0, sm: 2 }, width: { xs: "100%", sm: "auto" } }, flexDirection: { xs: "column", sm: "row" } }}
-          >
-            <EmphasisText>{isAdmin ? "สรุปก่อนส่งเข้า SML" : "สรุปผลพรีวิว"}</EmphasisText>
-            <Typography variant="body2">
-              {isAdmin
-                ? `ส่งเข้า SML ได้ ${writablePreviewCount} บิล จากทั้งหมด ${preview.totalCount} บิล${blockedPreviewCount ? `, ระบบไม่ส่ง ${blockedPreviewCount} บิล` : ""}, ลูกหนี้ใหม่ ${selectedCustomer || "-"}, ชุดเลข ${selectedFormat || "-"}`
-                : `พรีวิวพบ ${preview.totalCount} บิล, ส่งจริงได้เฉพาะผู้ดูแลระบบ, ลูกหนี้ใหม่ ${selectedCustomer || "-"}, ชุดเลข ${selectedFormat || "-"}`}
-            </Typography>
-          </Alert>
-          </Stack>
-        </Paper>
-      ) : null}
       {preview && previewDialogOpen ? (
         <BulkPreviewDialog
           busy={busy}
           canApply={isAdmin}
           readyToApply={readyToApply}
           hasEmptyAfterEdits={hasEmptyAfterEdits}
+          hasInvalidLineEdits={hasInvalidLineEdits}
+          hasPaymentAfterEditsBlocked={hasPaymentAfterEditsBlocked}
+          hasApplyChanges={hasApplyChanges}
           result={preview}
           selectedDocNo={previewDialogDocNo}
           selectedFormat={selectedFormat}
           selectedCustomer={selectedCustomer}
           requestedVatType={vatType}
           perDocEdits={perDocEdits}
+          excludedDocNos={effectiveExcludedDocNos}
+          autoExcludedDocNos={autoExcludedPaymentDocNos}
           onUpdateEdit={setPerDocEditEntry}
+          onToggleExcluded={(docNo) => setExcludedDocNos((current) => {
+            const next = new Set(current);
+            if (next.has(docNo)) next.delete(docNo);
+            else next.add(docNo);
+            return next;
+          })}
           onClose={() => setPreviewDialogOpen(false)}
           onRequestApply={() => {
             setPreviewDialogOpen(false);
@@ -1055,29 +1175,57 @@ function BulkInvoiceEditPage({ status: _status, user }: { status: DatabaseStatus
       {confirmApplyOpen && preview ? (
         <RiskConfirmDialog
           busy={busy}
-          confirmDisabled={busy || confirmApplyText.trim() !== "ยืนยัน"}
           confirmLabel={busy ? "กำลังส่งเข้า SML" : "ยืนยันส่งเข้า SML"}
-          detail={`ระบบจะเขียนข้อมูลจริงลง SML เฉพาะ ${writablePreviewCount} บิลที่ผ่านพรีวิว จากทั้งหมด ${preview.totalCount} บิล`}
+          detail={`ระบบจะเขียนข้อมูลจริงลง SML เฉพาะ ${writablePreviewCount} บิลที่ผ่านพรีวิว จากทั้งหมด ${preview.totalCount} บิล${excludedPreviewCount ? ` และไม่ส่ง ${excludedPreviewCount} บิล` : ""}`}
           title="ยืนยันส่งเข้า SML"
           tone="danger"
-          onCancel={() => { setConfirmApplyOpen(false); setConfirmApplyText(""); }}
-          onConfirm={() => void applyBulk()}
+          onCancel={() => { setConfirmApplyOpen(false); setPreviewDialogOpen(true); }}
+          onConfirm={() => setFinalApplyConfirmOpen(true)}
         >
           <Box sx={{ display: "grid", gap: 1, gridTemplateColumns: { xs: "1fr", sm: "repeat(2, 1fr)" } }}>
             <SummaryLine label="บิลที่เลือก" value={`${selectedDocNos.length} บิล`} />
             <SummaryLine label="บิลที่จะส่งเข้า SML" value={`${writablePreviewCount} บิล`} strong />
+            <SummaryLine label="บิลเตือนลูกหนี้" value={`${missingCustomerWarningItems.length} บิล`} />
+            <SummaryLine label="บิลที่ไม่ส่ง" value={`${excludedPreviewCount} บิล`} />
             <SummaryLine label="ชุดเลขใหม่" value={selectedFormat || "-"} />
             <SummaryLine label="ลูกหนี้ใหม่" value={selectedCustomer || "-"} />
           </Box>
-          <TextField
-            autoFocus
-            label="พิมพ์คำว่า ยืนยัน เพื่อยืนยัน"
-            onChange={(event) => setConfirmApplyText(event.target.value)}
-            placeholder="ยืนยัน"
-            size="small"
-            value={confirmApplyText}
-          />
+          {missingCustomerWarningItems.length ? (
+            <Alert severity="warning">
+              {missingCustomerWarningItems.length} บิลไม่พบข้อมูลลูกหนี้ในแฟ้มลูกหนี้ ระบบจะใช้รหัสลูกหนี้เดิมจากเอกสารและยังส่งเข้า SML ได้:{" "}
+              {formatWarningDocList(missingCustomerWarningItems)}
+            </Alert>
+          ) : null}
         </RiskConfirmDialog>
+      ) : null}
+      {finalApplyConfirmOpen && preview ? (
+        <RiskConfirmDialog
+          busy={busy}
+          confirmLabel={busy ? "กำลังส่งเข้า SML" : "ส่งเข้า SML จริง"}
+          detail="ยืนยันขั้นสุดท้าย: หลังจากกดส่ง ระบบจะเริ่มเขียนข้อมูลจริงลง SML และแสดง progress ของ batch"
+          title="ยืนยันการส่งเข้า SML จริง"
+          tone="danger"
+          onCancel={() => setFinalApplyConfirmOpen(false)}
+          onConfirm={() => void applyBulk()}
+        >
+          <Alert severity="error">
+            โปรดตรวจเลขบิลใหม่ ลูกหนี้ ยอดเงิน และรายการสินค้าทุกบิลให้เรียบร้อยก่อนส่งจริง
+          </Alert>
+          {missingCustomerWarningItems.length ? (
+            <Alert severity="warning">
+              มีบิลที่ไม่พบข้อมูลลูกหนี้ {missingCustomerWarningItems.length} บิล แต่ระบบจะยังส่งโดยใช้รหัสลูกหนี้เดิม:{" "}
+              {formatWarningDocList(missingCustomerWarningItems)}
+            </Alert>
+          ) : null}
+        </RiskConfirmDialog>
+      ) : null}
+      {applyProgressOpen && applyProgress ? (
+        <BulkApplyProgressDialog
+          busy={busy}
+          progress={applyProgress}
+          onClose={() => setApplyProgressOpen(false)}
+          onRetryFailed={() => void retryFailedBulk(applyProgress.batchId)}
+        />
       ) : null}
     </Stack>
   );
@@ -1088,13 +1236,19 @@ function BulkPreviewDialog({
   canApply,
   readyToApply,
   hasEmptyAfterEdits,
+  hasInvalidLineEdits,
+  hasPaymentAfterEditsBlocked,
+  hasApplyChanges,
   result,
   selectedDocNo,
   selectedFormat,
   selectedCustomer,
   requestedVatType,
   perDocEdits,
+  excludedDocNos,
+  autoExcludedDocNos,
   onUpdateEdit,
+  onToggleExcluded,
   onClose,
   onRequestApply,
   onSelectDoc,
@@ -1104,16 +1258,22 @@ function BulkPreviewDialog({
   canApply: boolean;
   readyToApply: boolean;
   hasEmptyAfterEdits: boolean;
+  hasInvalidLineEdits: boolean;
+  hasPaymentAfterEditsBlocked: boolean;
+  hasApplyChanges: boolean;
   result: BulkDocumentChangeResult;
   selectedDocNo: string;
   selectedFormat: string;
   selectedCustomer: string;
   requestedVatType: number;
-  perDocEdits: Map<string, { removed: Set<string>; added: NewLineInput[] }>;
+  perDocEdits: Map<string, PerDocEditState>;
+  excludedDocNos: Set<string>;
+  autoExcludedDocNos: Set<string>;
   onUpdateEdit: (
     docNo: string,
-    updater: (current: { removed: Set<string>; added: NewLineInput[] }) => { removed: Set<string>; added: NewLineInput[] },
+    updater: (current: PerDocEditState) => PerDocEditState,
   ) => void;
+  onToggleExcluded: (docNo: string) => void;
   onClose: () => void;
   onRequestApply: () => void;
   onSelectDoc: (docNo: string) => void;
@@ -1125,11 +1285,13 @@ function BulkPreviewDialog({
   const selectedPreview = selectedItem?.preview || null;
   const selectedIndex = Math.max(0, reviewQueue.findIndex((item) => item.docNo === selectedItem?.docNo));
   const canNavigate = reviewQueue.length > 1;
-  const reviewableItems = result.items.filter((item) => item.status === "ready" || item.status === "warning");
+  const reviewableItems = result.items.filter((item) => !excludedDocNos.has(item.docNo) && (item.status === "ready" || item.status === "warning"));
   const writableCount = reviewableItems.length;
-  const blockedCount = result.items.filter((item) => item.status === "blocked" || item.status === "failed").length;
-  const skippedCount = result.items.filter((item) => item.status === "skipped").length;
+  const blockedCount = result.items.filter((item) => !excludedDocNos.has(item.docNo) && (item.status === "blocked" || item.status === "failed")).length;
+  const skippedCount = result.items.filter((item) => !excludedDocNos.has(item.docNo) && item.status === "skipped").length;
   const nonWritableCount = blockedCount + skippedCount;
+  const excludedCount = result.items.filter((item) => excludedDocNos.has(item.docNo)).length;
+  const customerWarningItems = reviewableItems.filter((item) => isMissingCustomerWarning(item.message));
   const dialogMaxWidth = canNavigate ? "xl" : "lg";
   const canRequestApply = canApply && readyToApply && !busy;
   const selectedIsWritable = selectedItem?.status === "ready" || selectedItem?.status === "warning";
@@ -1140,7 +1302,7 @@ function BulkPreviewDialog({
     ? requestedVatType
     : (selectedPreview?.after.vatType ?? selectedPreview?.before.vatType ?? 0);
   const recomputed = selectedPreview && selectedEdit
-    ? recomputeClientTotals(selectedPreview.remainingLines, selectedEdit.removed, selectedEdit.added, effectiveVatType)
+    ? recomputeClientTotals(selectedPreview.remainingLines, selectedEdit.removed, selectedEdit.added, selectedEdit.lineEdits, effectiveVatType)
     : null;
   const displayLineCount = selectedPreview
     ? (selectedEdit
@@ -1150,13 +1312,20 @@ function BulkPreviewDialog({
   const displayTotalValue = recomputed ? recomputed.totalValue : selectedPreview?.after.totalValue ?? "";
   const displayTotalVat = recomputed ? recomputed.totalVatValue : selectedPreview?.totals.totalVatValue ?? "";
   const displayTotalAmount = recomputed ? recomputed.totalAmount : selectedPreview?.totals.totalAmount ?? "";
+  const displayRemark = selectedEdit?.remark ?? selectedPreview?.after.remark ?? "";
   const selectedBillIsEmpty = selectedIsWritable && selectedPreview ? displayLineCount === 0 : false;
-  const footerProgressText = !canApply
-    ? "สิทธิ์ User ดูพรีวิวได้เท่านั้น ต้องให้ Admin เป็นผู้ส่งเข้า SML"
+	  const footerProgressText = !canApply
+	    ? "สิทธิ์ User ดูพรีวิวได้เท่านั้น ต้องให้ Admin เป็นผู้ส่งเข้า SML"
+	    : hasInvalidLineEdits
+	      ? "มีจำนวน ราคา หรือส่วนลดไม่ถูกต้อง ต้องแก้ก่อนส่ง"
+    : hasPaymentAfterEditsBlocked
+      ? "มีบิลที่ยอดชำระเงินสดไม่พอ ต้องแก้ยอดหรือกดไม่ส่งบิลนี้ก่อน"
     : hasEmptyAfterEdits
       ? "มีบิลที่ไม่มีสินค้าเหลือ ต้องยกเลิกการลบก่อนส่ง"
+    : !hasApplyChanges
+      ? "ยังไม่มีการแก้ไข เลือกประเภท/ลูกหนี้/ชุดเลข หรือแก้หมายเหตุ/รายการสินค้าในพรีวิวก่อน"
       : writableCount
-        ? `ส่งเข้า SML ได้ ${writableCount} บิล${nonWritableCount ? `, ระบบจะไม่ส่ง ${nonWritableCount} บิล` : ""}`
+        ? `ส่งเข้า SML ได้ ${writableCount} บิล${nonWritableCount ? `, ต้องแก้/ไม่ส่ง ${nonWritableCount} บิล` : ""}${excludedCount ? `, ไม่ส่ง ${excludedCount} บิล` : ""}`
         : "ไม่มีบิลที่ระบบส่งเข้า SML ได้";
 
   useEffect(() => {
@@ -1205,18 +1374,39 @@ function BulkPreviewDialog({
             </Alert>
           ) : null}
 
+          {customerWarningItems.length ? (
+            <Alert severity="warning">
+              ไม่พบข้อมูลลูกหนี้ในแฟ้มลูกหนี้ {customerWarningItems.length} บิล ระบบจะใช้รหัสลูกหนี้เดิมจากเอกสารและยังส่งเข้า SML ได้:{" "}
+              {formatWarningDocList(customerWarningItems)}
+            </Alert>
+          ) : null}
+
           {hasEmptyAfterEdits ? (
             <Alert severity="error">
               มีบิลที่ลบสินค้าจนไม่เหลือรายการแล้ว ต้องเพิ่มสินค้าหรือยกเลิกการลบก่อนจึงจะส่งเข้า SML ได้
             </Alert>
           ) : null}
+	          {hasInvalidLineEdits ? (
+	            <Alert severity="error">
+	              จำนวน ราคา หรือส่วนลดในพรีวิวไม่ถูกต้อง กรุณาแก้ค่าที่เป็นกรอบแดงก่อนส่งเข้า SML
+	            </Alert>
+	          ) : null}
+          {hasPaymentAfterEditsBlocked ? (
+            <Alert severity="error">
+              มีบิลที่ยอดชำระเงินสดไม่พอ ให้กด “ไม่ส่งบิลนี้” ในรายการซ้าย หรือปรับรายการสินค้าให้ยอดผ่านก่อนส่งเข้า SML
+            </Alert>
+          ) : null}
 
-          <Box sx={{ alignItems: "start", display: "grid", gap: 1.5, gridTemplateColumns: { xs: "1fr", md: canNavigate ? "340px minmax(0, 1fr)" : "1fr" } }}>
+          <Box sx={{ alignItems: "stretch", display: "grid", gap: 1.5, gridTemplateColumns: { xs: "1fr", md: canNavigate ? "340px minmax(0, 1fr)" : "1fr" } }}>
             {canNavigate ? (
               <BulkReviewQueuePanel
                 busy={busy}
                 items={reviewQueue}
+                perDocEdits={perDocEdits}
+                excludedDocNos={excludedDocNos}
+                autoExcludedDocNos={autoExcludedDocNos}
                 onSelectDoc={onSelectDoc}
+                onToggleExcluded={onToggleExcluded}
                 onRegenItem={onRegenItem}
                 selectedDocNo={selectedItem?.docNo || ""}
               />
@@ -1261,6 +1451,12 @@ function BulkPreviewDialog({
                   </Alert>
                 );
               })() : null}
+              {selectedItem?.status === "warning" && selectedItem.message ? (
+                <Alert severity="warning">
+                  <EmphasisText>เอกสารนี้มีข้อควรตรวจสอบ แต่ยังส่งเข้า SML ได้</EmphasisText>
+                  {selectedItem.message}
+                </Alert>
+              ) : null}
 
               {selectedPreview ? (
                 <>
@@ -1268,6 +1464,7 @@ function BulkPreviewDialog({
                   <Box sx={{ display: "grid", columnGap: 2, rowGap: 0.75, gridTemplateColumns: { xs: "1fr", sm: "repeat(2, 1fr)", lg: "repeat(4, 1fr)" } }}>
                     <DocumentFact label="เลขบิลเดิม" value={selectedPreview.before.docNo} strong />
                     <DocumentFact changed={valueChanged(selectedPreview.after.docNo, selectedPreview.before.docNo)} label="เลขบิลใหม่" previousValue={selectedPreview.before.docNo} value={selectedPreview.after.docNo} strong />
+                    <DocumentFact changed={valueChanged(selectedPreview.after.docRef, selectedPreview.before.docRef)} label="เอกสารอ้างอิง" previousValue={selectedPreview.before.docRef || "-"} value={selectedPreview.after.docRef || "-"} />
                     <DocumentFact label="วันที่เอกสาร" value={formatDate(selectedPreview.after.docDate)} />
                     <DocumentFact label="เวลา" value={formatDocumentTime(selectedPreview.after.docTime)} />
                     <DocumentFact changed={valueChanged(selectedPreview.after.docFormatCode, selectedPreview.before.docFormatCode)} label="ชุดเลข" previousValue={selectedPreview.before.docFormatCode || "-"} value={selectedFormat || selectedPreview.after.docFormatCode || "-"} />
@@ -1280,6 +1477,7 @@ function BulkPreviewDialog({
                     docNo={selectedPreview.after.docNo}
                     lines={selectedPreview.remainingLines}
                     removed={selectedEdit?.removed}
+                    lineEdits={selectedEdit?.lineEdits}
                     added={selectedEdit?.added || []}
                     onToggleRemove={(itemCode) => onUpdateEdit(selectedDocKey, (cur) => {
                       const next = new Set(cur.removed);
@@ -1287,6 +1485,7 @@ function BulkPreviewDialog({
                       else next.add(itemCode);
                       return { ...cur, removed: next };
                     })}
+                    onLineFieldChange={(line, field, value) => onUpdateEdit(selectedDocKey, (cur) => updateLineEditDraft(cur, line, field, value))}
                     onRemoveAdded={(idx) => onUpdateEdit(selectedDocKey, (cur) => ({
                       ...cur,
                       added: cur.added.filter((_, i) => i !== idx),
@@ -1304,11 +1503,30 @@ function BulkPreviewDialog({
                   ) : null}
 
                   <Stack spacing={1.5}>
-                    <Paper variant="outlined" sx={{ ...changedPaperSx(valueChanged(selectedPreview.after.remark, selectedPreview.before.remark)), p: 1.25 }}>
-                      <Typography color="text.secondary" variant="caption">หมายเหตุหลังแก้ไข</Typography>
-                      <EmphasisText>{maskInternalRemark(selectedPreview.after.remark) || "ไม่มีหมายเหตุ"}</EmphasisText>
-                      {valueChanged(selectedPreview.after.remark, selectedPreview.before.remark) ? (
-                        <Typography color="text.secondary" sx={{ display: "block", mt: 0.25 }} variant="caption">เดิม: {maskInternalRemark(selectedPreview.before.remark) || "ไม่มีหมายเหตุ"}</Typography>
+                    <Paper variant="outlined" sx={{ ...changedPaperSx(valueChanged(displayRemark, selectedPreview.before.remark)), p: 1.25 }}>
+                      <Stack spacing={0.75}>
+                        <Typography color="text.secondary" variant="caption">หมายเหตุ</Typography>
+                        <TextField
+                          minRows={2}
+                          multiline
+                          onChange={(event) => onUpdateEdit(selectedDocKey, (cur) => {
+                            const nextRemark = event.target.value;
+                            if (nextRemark === selectedPreview.before.remark) {
+                              const { remark: _remark, ...rest } = cur;
+                              void _remark;
+                              return rest;
+                            }
+                            return { ...cur, remark: nextRemark };
+                          })}
+                          placeholder="ไม่มีหมายเหตุ"
+                          size="small"
+                          value={displayRemark}
+                        />
+                      </Stack>
+                      {valueChanged(displayRemark, selectedPreview.before.remark) ? (
+                        <Typography color="text.secondary" sx={{ display: "block", mt: 0.75 }} variant="caption">
+                          เดิม: {maskInternalRemark(selectedPreview.before.remark) || "ไม่มีหมายเหตุ"} → ใหม่: {maskInternalRemark(displayRemark) || "ไม่มีหมายเหตุ"}
+                        </Typography>
                       ) : null}
                     </Paper>
                     <Box sx={{ display: "grid", gap: 1, gridTemplateColumns: { xs: "1fr", sm: "repeat(2, 1fr)", md: "repeat(4, 1fr)" } }}>
@@ -1341,6 +1559,84 @@ function BulkPreviewDialog({
             {busy ? "กำลังส่ง" : `ส่ง ${writableCount} บิลเข้า SML`}
           </AppButton> : null}
         </DialogActions>
+    </Dialog>
+  );
+}
+
+function BulkApplyProgressDialog({
+  busy,
+  progress,
+  onClose,
+  onRetryFailed,
+}: {
+  busy: boolean;
+  progress: BulkApplyBatchProgress;
+  onClose: () => void;
+  onRetryFailed: () => void;
+}) {
+  const isMobile = useMediaQuery(appTheme.breakpoints.down("sm"));
+  const active = isActiveBatchStatus(progress.status);
+  const completedCount = progress.appliedCount + progress.failedCount + progress.skippedCount + progress.blockedCount;
+  const pct = progress.totalCount ? Math.min(100, Math.round((completedCount / progress.totalCount) * 100)) : 0;
+  const currentItem = progress.items.find((item) => item.status === "processing");
+  const failedItems = progress.items.filter((item) => item.status === "failed" || item.status === "skipped");
+  const canRetry = !active && failedItems.length > 0;
+  const statusText = active
+    ? `กำลังส่ง ${completedCount}/${progress.totalCount} บิล`
+    : progress.failedCount || progress.skippedCount || progress.blockedCount
+      ? `เสร็จบางส่วน ${progress.appliedCount}/${progress.totalCount} บิล`
+      : `ส่งสำเร็จครบ ${progress.appliedCount}/${progress.totalCount} บิล`;
+
+  return (
+    <Dialog fullScreen={isMobile} fullWidth maxWidth="sm" open onClose={active ? undefined : onClose}>
+      <DialogTitle sx={{ py: 1.25 }}>
+        <Stack direction="row" spacing={1} sx={{ alignItems: "center", justifyContent: "space-between", minWidth: 0 }}>
+          <SectionTitle level="h2" noWrap>สถานะส่งเข้า SML</SectionTitle>
+          <StatusBadge>{progress.batchNo || `Batch ${progress.batchId}`}</StatusBadge>
+        </Stack>
+      </DialogTitle>
+      <DialogContent dividers>
+        <Stack spacing={1.5}>
+          <Alert severity={active ? "info" : canRetry ? "warning" : "success"}>{statusText}</Alert>
+          <Box>
+            <LinearProgress variant="determinate" value={pct} />
+            <Typography color="text.secondary" sx={{ mt: 0.5 }} variant="caption">{pct}%</Typography>
+          </Box>
+          <Box sx={{ display: "grid", gap: 1, gridTemplateColumns: { xs: "1fr 1fr", sm: "repeat(4, 1fr)" } }}>
+            <SummaryLine label="สำเร็จ" value={`${progress.appliedCount} บิล`} strong />
+            <SummaryLine label="ไม่สำเร็จ" value={`${progress.failedCount} บิล`} />
+            <SummaryLine label="รอดำเนินการ" value={`${progress.pendingCount} บิล`} />
+            <SummaryLine label="ข้าม" value={`${progress.skippedCount + progress.blockedCount} บิล`} />
+          </Box>
+          {currentItem ? (
+            <Paper variant="outlined" sx={{ p: 1.25 }}>
+              <Typography color="text.secondary" variant="caption">กำลังดำเนินการ</Typography>
+              <DocCode value={`${currentItem.docNo} → ${currentItem.newDocNo || "-"}`} />
+            </Paper>
+          ) : null}
+          {failedItems.length ? (
+            <Stack spacing={0.75}>
+              <EmphasisText>รายการที่ไม่สำเร็จ</EmphasisText>
+              <Stack spacing={0.75} sx={{ maxHeight: 220, overflow: "auto" }}>
+                {failedItems.map((item) => (
+                  <Paper key={`${item.docNo}-${item.newDocNo}`} variant="outlined" sx={{ p: 1 }}>
+                    <DocCode value={`${item.docNo} → ${item.newDocNo || "-"}`} />
+                    <Typography color="error.main" variant="caption">{friendlyApplyErrorMessage(item.message)}</Typography>
+                  </Paper>
+                ))}
+              </Stack>
+            </Stack>
+          ) : null}
+        </Stack>
+      </DialogContent>
+      <DialogActions sx={{ p: { xs: 1, sm: 2 } }}>
+        <AppButton disabled={active && busy} onClick={onClose}>ปิด</AppButton>
+        {canRetry ? (
+          <AppButton disabled={busy} onClick={onRetryFailed} startIcon={<RefreshCw size={16} />} tone="danger">
+            ส่งซ้ำเฉพาะบิลที่ไม่สำเร็จ
+          </AppButton>
+        ) : null}
+      </DialogActions>
     </Dialog>
   );
 }
@@ -1385,16 +1681,56 @@ function PreviewLoadingDialog({
 
 const DUPLICATE_DOC_NO_PHRASE = "ถูกใช้แล้ว";
 
+function friendlyApplyErrorMessage(message?: string) {
+  const text = (message || "").trim();
+  if (!text) return "ส่งเข้า SML ไม่สำเร็จ";
+  if (text.includes("cb_trans sync invariant") || text.includes("cb_trans sync:") || text.includes("ตรวจสอบยอดชำระไม่ผ่าน")) {
+    return "ยอดชำระของบิลนี้อยู่ในรูปแบบที่ระบบต้องตรวจสอบเพิ่มเติม ระบบยังไม่ส่งเข้า SML เพื่อป้องกันยอดชำระผิด";
+  }
+  if (text.includes("customer not found")) {
+    return "ไม่พบข้อมูลลูกหนี้ในแฟ้มลูกหนี้ กรุณาตรวจสอบรหัสลูกหนี้";
+  }
+  return text;
+}
+
+function isMissingCustomerWarning(message?: string) {
+  const text = (message || "").trim();
+  return text.includes("ไม่พบข้อมูลลูกหนี้") || text.includes("ไม่พบ master ลูกหนี้");
+}
+
+function formatWarningDocList(items: Pick<BulkDocumentChangeItem, "docNo" | "message">[], limit = 5) {
+  const shown = items.slice(0, limit).map((item) => {
+    const customerCode = missingCustomerCodeFromMessage(item.message);
+    return customerCode ? `${item.docNo} (${customerCode})` : item.docNo;
+  });
+  const remaining = items.length - shown.length;
+  return `${shown.join(", ")}${remaining > 0 ? ` และอีก ${remaining} บิล` : ""}`;
+}
+
+function missingCustomerCodeFromMessage(message?: string) {
+  const text = (message || "").trim();
+  const match = text.match(/(?:ไม่พบข้อมูลลูกหนี้|ไม่พบ master ลูกหนี้)\s+([^\s]+)/);
+  return match?.[1] || "";
+}
+
 function BulkReviewQueuePanel({
   busy,
   items,
+  perDocEdits,
+  excludedDocNos,
+  autoExcludedDocNos,
   onSelectDoc,
+  onToggleExcluded,
   onRegenItem,
   selectedDocNo,
 }: {
   busy: boolean;
   items: BulkDocumentChangeItem[];
+  perDocEdits: Map<string, PerDocEditState>;
+  excludedDocNos: Set<string>;
+  autoExcludedDocNos: Set<string>;
   onSelectDoc: (docNo: string) => void;
+  onToggleExcluded: (docNo: string) => void;
   onRegenItem: (docNo: string, formatCode: string) => Promise<void>;
   selectedDocNo: string;
 }) {
@@ -1405,7 +1741,8 @@ function BulkReviewQueuePanel({
       sx={{
         display: "flex",
         flexDirection: "column",
-        maxHeight: { xs: 260, md: "calc(100vh - 245px)" },
+        height: { md: "100%" },
+        maxHeight: { xs: 260, md: "none" },
         minHeight: { md: 420 },
         minWidth: 0,
         overflow: "hidden",
@@ -1417,10 +1754,28 @@ function BulkReviewQueuePanel({
           <Typography color="text.secondary" variant="caption">{items.length} เอกสาร</Typography>
         </Stack>
       </Stack>
-      <Stack spacing={0.75} sx={{ overflow: "auto", p: 1 }}>
+      <Stack spacing={0.75} sx={{ flex: 1, minHeight: 0, overflow: "auto", p: 1 }}>
         {items.map((item) => {
           const selected = item.docNo === selectedDocNo;
-          const totalAmount = item.preview ? formatMoney(item.preview.totals.totalAmount) : "-";
+          const excluded = excludedDocNos.has(item.docNo);
+          const autoExcluded = autoExcludedDocNos.has(item.docNo);
+          const edit = perDocEdits.get(item.docNo);
+          const effectiveVatType = item.preview?.after.vatType ?? item.preview?.before.vatType ?? 0;
+          const displayTotals = item.preview && edit
+            ? recomputeClientTotals(item.preview.remainingLines, edit.removed, edit.added, edit.lineEdits, effectiveVatType)
+            : null;
+          const rawTotalAmount = displayTotals?.totalAmount || item.preview?.totals.totalAmount || "";
+          const totalAmount = item.preview ? formatMoney(rawTotalAmount) : "-";
+          const originalTotalAmount = item.preview ? formatMoney(item.preview.before.totalAmount || item.preview.totals.totalAmount) : "-";
+          const totalChanged = item.preview ? moneyValueChanged(rawTotalAmount, item.preview.before.totalAmount || item.preview.totals.totalAmount) : false;
+          const autoExcludedReason = autoExcluded && item.preview?.paymentBefore
+            ? evaluatePaymentPreviewPolicy(item.preview.paymentBefore, rawTotalAmount).blockedReason
+            : "";
+          const lineCount = item.preview
+            ? (edit
+                ? item.preview.remainingLines.filter((line) => !edit.removed.has(line.itemCode)).length + edit.added.length
+                : item.preview.totals.lineCount)
+            : 0;
           const customerCode = item.preview?.after.customerCode || "-";
           const isDuplicateBlocked = (item.status === "blocked" || item.status === "failed")
             && item.message.includes(DUPLICATE_DOC_NO_PHRASE);
@@ -1434,25 +1789,69 @@ function BulkReviewQueuePanel({
                 sx={{
                   alignItems: "stretch",
                   bgcolor: selected ? "rgba(36, 90, 109, 0.10)" : "background.paper",
-                  borderColor: selected ? "primary.main" : isDuplicateBlocked ? "error.main" : "divider",
+                  borderColor: excluded ? "warning.main" : selected ? "primary.main" : isDuplicateBlocked ? "error.main" : "divider",
                   color: "text.primary",
                   display: "block",
                   minHeight: 78,
+                  opacity: excluded ? 0.68 : 1,
                   p: 1,
                   textAlign: "left",
                 }}
               >
                 <Stack spacing={0.75}>
                   <DocCode value={`${item.docNo} → ${item.newDocNo || "-"}`} noWrap />
-                  <Stack direction="row" spacing={1} sx={{ justifyContent: "space-between" }}>
+                  <Stack direction="row" spacing={1} sx={{ alignItems: "flex-start", justifyContent: "space-between" }}>
                     <Typography color="text.secondary" noWrap variant="caption">ลูกหนี้ {customerCode}</Typography>
-                    <Typography color="primary.main" noWrap sx={{ fontVariantNumeric: "tabular-nums", fontWeight: 800 }} variant="caption">{totalAmount}</Typography>
+                    <Stack spacing={0.15} sx={{ alignItems: "flex-end", minWidth: 0 }}>
+                      {totalChanged ? (
+                        <Typography
+                          color="text.secondary"
+                          noWrap
+                          sx={{ fontVariantNumeric: "tabular-nums", lineHeight: 1, textDecoration: "line-through" }}
+                          variant="caption"
+                        >
+                          {originalTotalAmount}
+                        </Typography>
+                      ) : null}
+                      <Typography
+                        color={totalChanged ? "warning.main" : "primary.main"}
+                        noWrap
+                        sx={{ fontVariantNumeric: "tabular-nums", fontWeight: 800, lineHeight: 1.1 }}
+                        variant="caption"
+                      >
+                        {totalAmount}
+                      </Typography>
+                    </Stack>
                   </Stack>
+                  {item.preview ? (
+                    <Typography color="text.secondary" noWrap variant="caption">สินค้า {lineCount} รายการ</Typography>
+                  ) : null}
                   {isDuplicateBlocked ? (
                     <Typography color="error.main" variant="caption" noWrap>เลขบิลซ้ำ — กด Regen</Typography>
                   ) : null}
+                  {item.status === "warning" && item.message ? (
+                    <Typography color="warning.main" variant="caption" noWrap>{item.message}</Typography>
+                  ) : null}
+                  {excluded ? (
+                    <Typography color="warning.main" variant="caption" noWrap>
+                      {autoExcluded ? "ไม่ส่งอัตโนมัติ: ยอดต่ำกว่าเงินสด" : "ไม่ส่งบิลนี้เข้า SML"}
+                    </Typography>
+                  ) : null}
+                  {autoExcludedReason ? (
+                    <Typography color="warning.main" variant="caption" noWrap>{autoExcludedReason}</Typography>
+                  ) : null}
                 </Stack>
               </Button>
+              <AppButton
+                disabled={busy || autoExcluded}
+                fullWidth
+                size="small"
+                tone={excluded ? "primary" : "secondary"}
+                type="button"
+                onClick={() => onToggleExcluded(item.docNo)}
+              >
+                {autoExcluded ? "แก้ยอดให้ถึงเงินสดเดิม" : excluded ? "นำกลับมาส่ง" : "ไม่ส่งบิลนี้"}
+              </AppButton>
               {isDuplicateBlocked && formatCode ? (
                 <AppButton
                   disabled={busy}
@@ -1641,12 +2040,16 @@ function PreviewChangedFact({ change }: { change: PreviewChangeItem }) {
 }
 
 const CB_DOC_TYPE_LABELS: Record<number, string> = {
-  1: "เงินสด",
+  1: "เงินโอน",
   2: "เช็ค",
   3: "บัตรเครดิต",
   4: "เงินสดย่อย",
-  5: "ตัดเงินล่วงหน้า",
+  5: "เงินล่วงหน้า",
   9: "คูปอง",
+  11: "จ่ายอื่น",
+  12: "รับอื่น",
+  19: "สกุลเงินอื่น",
+  21: "eWallet",
 };
 
 // PaymentChangePreviewPanel แสดงข้อมูลการชำระเงิน (cb_trans + cb_trans_detail)
@@ -1657,23 +2060,37 @@ function PaymentChangePreviewPanel({ preview, displayTotalAmount }: { preview: D
   const before = preview.paymentBefore;
   // Re-simulate ด้วย displayTotalAmount ถ้า user ปรับยอด client-side
   // ถ้าไม่มี displayTotalAmount ใช้ paymentAfter จาก backend ตามเดิม
-  const after = before && displayTotalAmount != null
+  const simulated = before && displayTotalAmount != null
     ? simulatePaymentAfter(before, displayTotalAmount)
-    : preview.paymentAfter;
+    : !before && preview.paymentAfter && displayTotalAmount != null
+      ? { after: newCashPreviewPayment(preview.paymentAfter, displayTotalAmount), error: "" }
+    : { after: preview.paymentAfter ?? null, error: "" };
+  const after = simulated.after;
   if (!before) {
     return (
       <Paper variant="outlined" sx={{ p: 1.25 }}>
-        <Stack spacing={0.5}>
+        <Stack spacing={1}>
           <EmphasisText>การชำระเงิน</EmphasisText>
-          <Typography color="text.secondary" variant="body2">
-            บิลนี้ไม่มีข้อมูลใน cb_trans (เช่น ขายเชื่อ/ลูกหนี้) — ระบบจะไม่ปรับยอดชำระ
-          </Typography>
+          {after ? (
+            <>
+              <Typography color="text.secondary" variant="body2">
+                จะสร้างข้อมูลรับเงินสดใหม่ใน cb_trans เมื่อส่งเข้า SML
+              </Typography>
+              <Box sx={{ display: "grid", gap: 1, gridTemplateColumns: { xs: "1fr", sm: "repeat(2, 1fr)", md: "repeat(3, 1fr)" } }}>
+                <TotalLine changed label="ยอดชำระรวม" previousValue="-" value={formatMoney(after.totalAmountPay)} strong />
+                <TotalLine changed label="เงินสด" previousValue="-" value={formatMoney(after.cashAmount)} />
+              </Box>
+            </>
+          ) : (
+            <Typography color="text.secondary" variant="body2">
+              บิลนี้ไม่มีข้อมูลใน cb_trans (เช่น ขายเชื่อ/ลูกหนี้) — ระบบจะไม่ปรับยอดชำระ
+            </Typography>
+          )}
         </Stack>
       </Paper>
     );
   }
   const fields: Array<{ key: keyof PaymentRow; label: string }> = [
-    { key: "cashAmount", label: "เงินสด" },
     { key: "chqAmount", label: "เช็ค" },
     { key: "tranferAmount", label: "โอน" },
     { key: "cardAmount", label: "บัตรเครดิต" },
@@ -1692,6 +2109,9 @@ function PaymentChangePreviewPanel({ preview, displayTotalAmount }: { preview: D
     <Paper variant="outlined" sx={{ p: 1.25 }}>
       <Stack spacing={1}>
         <EmphasisText>การชำระเงิน</EmphasisText>
+        {simulated.error ? (
+          <Alert severity="error">{simulated.error}</Alert>
+        ) : null}
         <Box sx={{ display: "grid", gap: 1, gridTemplateColumns: { xs: "1fr", sm: "repeat(2, 1fr)", md: "repeat(3, 1fr)" } }}>
           <TotalLine
             changed={after ? moneyValueChanged(after.totalAmountPay, before.totalAmountPay) : false}
@@ -1700,18 +2120,14 @@ function PaymentChangePreviewPanel({ preview, displayTotalAmount }: { preview: D
             value={formatMoney(after?.totalAmountPay ?? before.totalAmountPay)}
             strong
           />
-          <TotalLine
-            changed={after ? moneyValueChanged(after.payCashAmount, before.payCashAmount) : false}
-            label="รับเงินสด"
-            previousValue={formatMoney(before.payCashAmount)}
-            value={formatMoney(after?.payCashAmount ?? before.payCashAmount)}
-          />
-          <TotalLine
-            changed={after ? moneyValueChanged(after.moneyChange, before.moneyChange) : false}
-            label="เงินทอน"
-            previousValue={formatMoney(before.moneyChange)}
-            value={formatMoney(after?.moneyChange ?? before.moneyChange)}
-          />
+          {moneyValueNonZero(before.cashAmount) || moneyValueNonZero(after?.cashAmount) ? (
+            <TotalLine
+              changed={after ? moneyValueChanged(after.cashAmount, before.cashAmount) : false}
+              label="เงินสด"
+              previousValue={formatMoney(before.cashAmount)}
+              value={formatMoney(after?.cashAmount ?? before.cashAmount)}
+            />
+          ) : null}
         </Box>
         {visible.length ? (
           <Box sx={{ display: "grid", gap: 0.75, gridTemplateColumns: { xs: "1fr", sm: "repeat(2, 1fr)", md: "repeat(3, 1fr)" } }}>
@@ -1745,17 +2161,19 @@ function PaymentChangePreviewPanel({ preview, displayTotalAmount }: { preview: D
                 </TableHead>
                 <TableBody>
                   {(before.details ?? []).map((row, idx) => {
-                    const a = after?.details[idx];
-                    const changed = a ? moneyValueChanged(a.amount, row.amount) : false;
+                    const a = findPaymentDetailAfter(row, after?.details ?? [], idx);
+                    const removed = Boolean(after) && !a;
+                    const changed = removed || (a ? moneyValueChanged(a.amount, row.amount) : false);
                     const docTypeLabel = CB_DOC_TYPE_LABELS[row.docType] ?? `doc_type=${row.docType}`;
+                    const rowNumber = row.rowOrder || row.lineNumber || idx + 1;
                     return (
-                      <TableRow key={`${row.lineNumber}-${idx}`}>
-                        <TableCell>{row.lineNumber}</TableCell>
+                      <TableRow key={`${row.rowOrder || row.lineNumber}-${idx}`} sx={removed ? { bgcolor: "action.hover" } : undefined}>
+                        <TableCell>{rowNumber}</TableCell>
                         <TableCell>{docTypeLabel}</TableCell>
                         <TableCell>{row.transNumber || "-"}</TableCell>
                         <TableCell>{[row.bankCode, row.creditCardType].filter(Boolean).join(" / ") || "-"}</TableCell>
                         <TableCell align="right" sx={{ fontVariantNumeric: "tabular-nums", textDecoration: changed ? "line-through" : "none", color: changed ? "text.secondary" : "text.primary" }}>{formatMoney(row.amount)}</TableCell>
-                        <TableCell align="right" sx={{ fontVariantNumeric: "tabular-nums", fontWeight: changed ? 800 : 500, color: changed ? "warning.main" : "text.primary" }}>{formatMoney(a ? a.amount : row.amount)}</TableCell>
+                        <TableCell align="right" sx={{ fontVariantNumeric: "tabular-nums", fontWeight: changed ? 800 : 500, color: changed ? "warning.main" : "text.primary" }}>{a ? formatMoney(a.amount) : "-"}</TableCell>
                       </TableRow>
                     );
                   })}
@@ -1770,6 +2188,26 @@ function PaymentChangePreviewPanel({ preview, displayTotalAmount }: { preview: D
 }
 
 type PaymentRow = NonNullable<DocumentChangePreview["paymentBefore"]>;
+type PaymentDetailRow = NonNullable<DocumentChangePreview["paymentBefore"]>["details"][number];
+
+function findPaymentDetailAfter(beforeRow: PaymentDetailRow, afterDetails: PaymentDetailRow[], fallbackIndex: number): PaymentDetailRow | undefined {
+  const rowOrderMatch = beforeRow.rowOrder
+    ? afterDetails.find((detail) => detail.rowOrder === beforeRow.rowOrder)
+    : undefined;
+  if (rowOrderMatch) return rowOrderMatch;
+
+  const identityMatch = afterDetails.find((detail) =>
+    detail.lineNumber === beforeRow.lineNumber &&
+    detail.docType === beforeRow.docType &&
+    detail.transNumber === beforeRow.transNumber &&
+    detail.bankCode === beforeRow.bankCode &&
+    detail.creditCardType === beforeRow.creditCardType
+  );
+  if (identityMatch) return identityMatch;
+
+  if (isCard3881PaymentDetail(beforeRow)) return undefined;
+  return afterDetails[fallbackIndex];
+}
 
 function moneyValueNonZero(v: string | undefined | null): boolean {
   if (!v) return false;
@@ -1787,6 +2225,10 @@ function reviewQueuePriority(item: BulkDocumentChangeItem) {
   if (item.preview) return 0;
   if (item.status === "blocked" || item.status === "failed" || item.status === "skipped") return 1;
   return 2;
+}
+
+function isActiveBatchStatus(status: BulkApplyBatchProgress["status"]) {
+  return status === "pending" || status === "processing";
 }
 
 function getInitialReviewDocNo(items: BulkDocumentChangeItem[]) {
@@ -1807,151 +2249,373 @@ function parseFloat2(s: string): number {
   return Number.isFinite(n) ? n : 0;
 }
 
-// Mirror of backend simulateDocumentPaymentAfter: proportionally rescales all
-// cb_trans payment fields to match newTotal. Returns a new DocumentPayment
-// object — never mutates the original.
-function simulatePaymentAfter(before: NonNullable<DocumentChangePreview["paymentBefore"]>, newTotalStr: string): NonNullable<DocumentChangePreview["paymentBefore"]> {
+function evaluatePaymentPreviewPolicy(
+  before: NonNullable<DocumentChangePreview["paymentBefore"]>,
+  newTotalStr: string,
+): { after: NonNullable<DocumentChangePreview["paymentBefore"]>; error: string; blockedReason: string } {
   const newTotal = parseFloat2(newTotalStr);
-  if (newTotal < 0) return before;
+  if (newTotal < 0) return { after: before, error: "ยอดชำระใหม่ไม่ถูกต้อง", blockedReason: "ยอดชำระใหม่ไม่ถูกต้อง" };
 
   const FIELDS = ["cashAmount", "chqAmount", "tranferAmount", "cardAmount", "walletAmount", "couponAmount", "pointAmount", "depositAmount", "advanceAmount", "pettyCashAmount"] as const;
-  const oldPay = parseFloat2(before.totalAmountPay);
-
-  let scaled: number[];
-  if (oldPay <= 0.005) {
-    // oldTotal == 0: entire amount to cash, others zero (mirrors Go edge case)
-    scaled = FIELDS.map((_, i) => (i === 0 ? newTotal : 0));
-  } else {
-    const ratio = newTotal / oldPay;
-    const raw = FIELDS.map((f) => round2(parseFloat2(before[f]) * ratio));
-    // absorb rounding residual into cash_amount (index 0)
-    const sum = raw.reduce((a, b) => a + b, 0);
-    raw[0] = round2(raw[0] + (newTotal - sum));
-    if (raw[0] < 0) raw[0] = 0;
-    scaled = raw;
+  const oldCard = parseFloat2(before.cardAmount);
+  const payCash = parseFloat2(before.payCashAmount);
+  const cardToCashAmount = paymentCard3881TransferAmount(before.details ?? []);
+  const cardReduction = Math.min(oldCard, cardToCashAmount);
+  const protectedPayment = protectedPaymentPreview(before, cardReduction);
+  if (newTotal < protectedPayment.total - 0.01) {
+    const blockedReason = `ยอดบิลใหม่ต่ำกว่า payment ที่ต้องคงเดิม (${protectedPayment.labels.join(", ")}) จึงยังไม่ส่งเข้า SML`;
+    return { after: before, error: blockedReason, blockedReason };
+  }
+  const nextCash = round2(newTotal - protectedPayment.total);
+  const nextCard = round2(oldCard - cardReduction);
+  if (nextCash < -0.01) {
+    const blockedReason = "ยอดบิลใหม่ทำให้เงินสดติดลบ จึงยังไม่ส่งเข้า SML";
+    return { after: before, error: blockedReason, blockedReason };
   }
 
-  // Reconcile pay_cash_amount / money_change
-  let payCash = parseFloat2(before.payCashAmount);
-  const newCash = scaled[0];
-  if (oldPay > 0.005) {
-    const ratio = newTotal / oldPay;
-    payCash = round2(parseFloat2(before.payCashAmount) * ratio);
-  }
-  if (payCash < newCash) payCash = newCash;
-  const moneyChange = Math.max(0, round2(payCash - newCash));
-
-  // Scale detail rows by same ratio (guard against null from backend)
   const safeDetails = before.details ?? [];
-  let details: typeof before.details;
-  if (oldPay <= 0.005) {
-    details = safeDetails.map((d) => ({ ...d, amount: "0.00", sumAmount: "0.00" }));
-  } else {
-    const ratio = newTotal / oldPay;
-    details = safeDetails.map((d) => ({
-      ...d,
-      amount: round2(parseFloat2(d.amount) * ratio).toFixed(2),
-      sumAmount: round2(parseFloat2(d.sumAmount) * ratio).toFixed(2),
-    }));
-  }
+  const details = safeDetails.filter((d) => !isCard3881PaymentDetail(d)).map((d) => ({ ...d }));
+  const boundedCash = Math.max(0, nextCash);
+  const nextPayCash = cardToCashAmount > 0.01 ? Math.max(payCash, boundedCash) : payCash;
 
-  return {
+  return { after: {
     ...before,
     totalAmount: newTotal.toFixed(2),
     totalNetAmount: newTotal.toFixed(2),
     totalAmountPay: newTotal.toFixed(2),
-    payCashAmount: payCash.toFixed(2),
-    moneyChange: moneyChange.toFixed(2),
-    cashAmount: scaled[0].toFixed(2),
-    chqAmount: scaled[1].toFixed(2),
-    tranferAmount: scaled[2].toFixed(2),
-    cardAmount: scaled[3].toFixed(2),
-    walletAmount: scaled[4].toFixed(2),
-    couponAmount: scaled[5].toFixed(2),
-    pointAmount: scaled[6].toFixed(2),
-    depositAmount: scaled[7].toFixed(2),
-    advanceAmount: scaled[8].toFixed(2),
-    pettyCashAmount: scaled[9].toFixed(2),
+    payCashAmount: nextPayCash.toFixed(2),
+    moneyChange: Math.max(0, round2(nextPayCash - boundedCash)).toFixed(2),
+    cashAmount: boundedCash.toFixed(2),
+    chqAmount: parseFloat2(before[FIELDS[1]]).toFixed(2),
+    tranferAmount: parseFloat2(before[FIELDS[2]]).toFixed(2),
+    cardAmount: Math.max(0, nextCard).toFixed(2),
+    walletAmount: parseFloat2(before[FIELDS[4]]).toFixed(2),
+    couponAmount: parseFloat2(before[FIELDS[5]]).toFixed(2),
+    pointAmount: parseFloat2(before[FIELDS[6]]).toFixed(2),
+    depositAmount: parseFloat2(before[FIELDS[7]]).toFixed(2),
+    advanceAmount: parseFloat2(before[FIELDS[8]]).toFixed(2),
+    pettyCashAmount: parseFloat2(before[FIELDS[9]]).toFixed(2),
     details,
+  }, error: "", blockedReason: "" };
+}
+
+function protectedPaymentPreview(before: NonNullable<DocumentChangePreview["paymentBefore"]>, cardReduction: number): { total: number; labels: string[] } {
+  const header = new Map<string, number>([
+    ["เช็ค", parseFloat2(before.chqAmount)],
+    ["เงินโอน", parseFloat2(before.tranferAmount)],
+    ["บัตรเครดิต", Math.max(0, round2(parseFloat2(before.cardAmount) - cardReduction))],
+    ["Wallet", parseFloat2(before.walletAmount)],
+    ["คูปอง", parseFloat2(before.couponAmount)],
+    ["พอยต์", parseFloat2(before.pointAmount)],
+    ["มัดจำ", parseFloat2(before.depositAmount)],
+    ["เงินล่วงหน้า", parseFloat2(before.advanceAmount)],
+    ["เงินสดย่อย", parseFloat2(before.pettyCashAmount)],
+  ]);
+  const detail = new Map<string, number>();
+  let otherDetail = 0;
+  for (const row of before.details ?? []) {
+    if (isCard3881PaymentDetail(row)) continue;
+    const amount = parseFloat2(row.amount) || parseFloat2(row.sumAmount);
+    if (amount <= 0) continue;
+    const label = paymentDetailProtectedLabel(row.docType);
+    if (label) detail.set(label, round2((detail.get(label) ?? 0) + amount));
+    else otherDetail = round2(otherDetail + amount);
+  }
+  const order = ["เช็ค", "เงินโอน", "บัตรเครดิต", "Wallet", "คูปอง", "พอยต์", "มัดจำ", "เงินล่วงหน้า", "เงินสดย่อย"];
+  let total = 0;
+  const labels: string[] = [];
+  for (const label of order) {
+    const amount = Math.max(header.get(label) ?? 0, detail.get(label) ?? 0);
+    if (amount <= 0.01) continue;
+    total = round2(total + amount);
+    labels.push(`${label} ${amount.toFixed(2)}`);
+  }
+  if (otherDetail > 0.01) {
+    total = round2(total + otherDetail);
+    labels.push(`รายการชำระอื่น ${otherDetail.toFixed(2)}`);
+  }
+  return { total, labels: labels.length ? labels : ["ไม่มี"] };
+}
+
+function paymentDetailProtectedLabel(docType: number): string {
+  switch (docType) {
+    case 1: return "เงินโอน";
+    case 2: return "เช็ค";
+    case 3: return "บัตรเครดิต";
+    case 4: return "เงินสดย่อย";
+    case 5: return "เงินล่วงหน้า";
+    case 9: return "คูปอง";
+    case 21: return "Wallet";
+    default: return "";
+  }
+}
+
+function isCard3881PaymentDetail(detail: NonNullable<DocumentChangePreview["paymentBefore"]>["details"][number]) {
+  return detail.docType === 3 && (detail.transNumber.includes("3881") || detail.creditCardType.includes("3881"));
+}
+
+function paymentCard3881TransferAmount(details: NonNullable<DocumentChangePreview["paymentBefore"]>["details"]) {
+  return round2(details.reduce((sum, detail) => {
+    if (!isCard3881PaymentDetail(detail)) return sum;
+    const amount = parseFloat2(detail.amount);
+    return sum + (amount || parseFloat2(detail.sumAmount));
+  }, 0));
+}
+
+// Mirror of backend payment policy: cash absorbs bill deltas, and 3881 credit-card details are converted to cash.
+function simulatePaymentAfter(before: NonNullable<DocumentChangePreview["paymentBefore"]>, newTotalStr: string): { after: NonNullable<DocumentChangePreview["paymentBefore"]>; error: string } {
+  const result = evaluatePaymentPreviewPolicy(before, newTotalStr);
+  return { after: result.after, error: result.error };
+}
+
+function newCashPreviewPayment(template: NonNullable<DocumentChangePreview["paymentAfter"]>, newTotalStr: string): NonNullable<DocumentChangePreview["paymentAfter"]> {
+  const total = parseFloat2(newTotalStr).toFixed(2);
+  return {
+    ...template,
+    totalAmount: total,
+    totalNetAmount: total,
+    totalAmountPay: total,
+    cashAmount: total,
+    payCashAmount: "0.00",
+    moneyChange: "0.00",
+    chqAmount: "0.00",
+    tranferAmount: "0.00",
+    cardAmount: "0.00",
+    walletAmount: "0.00",
+    couponAmount: "0.00",
+    pointAmount: "0.00",
+    depositAmount: "0.00",
+    advanceAmount: "0.00",
+    pettyCashAmount: "0.00",
+    details: [],
   };
 }
 
-// Mirror of backend computeTotalsFromLines: vat_type 0=no vat, 1=incl 7%, 2=excl 7%, else stored.
+// Mirror of backend computeTotalsFromLines: vat_type 0=excl 7%, 1=incl 7%, 2=zero VAT, 3=no VAT impact.
 function recomputeClientTotals(
   remaining: DocumentDetailLine[],
   removed: Set<string>,
   added: NewLineInput[],
+  lineEdits: Map<number, LineEditDraft>,
   vatType: number,
-): { totalValue: string; totalVatValue: string; totalAmount: string } {
+): { totalValue: string; totalBeforeVat: string; totalVatValue: string; totalAfterVat: string; totalExceptVat: string; totalAmount: string } {
   let sumAmount = 0;
   let storedVat = 0;
   let storedExcl = 0;
   for (const line of remaining) {
     if (removed.has(line.itemCode)) continue;
-    sumAmount += parseFloat2(line.sumAmount);
-    storedVat += parseFloat2(line.totalVatValue);
+    const effectiveLine = applyLineEditToLine(line, lineEdits.get(line.rowOrder)).line;
+    sumAmount += parseFloat2(effectiveLine.sumAmount);
+    storedVat += parseFloat2(effectiveLine.totalVatValue);
     // line doesn't carry sum_amount_exclude_vat in client; fall back to sumAmount when vat_type=3
     storedExcl += parseFloat2(line.sumAmount);
   }
   for (const a of added) {
     const qty = parseFloat2(a.qty);
     const price = parseFloat2(a.price);
-    const disc = parseFloat2(a.discount);
+    const disc = computeSmlDiscountAmount(qty, price, a.discount).amount;
     const lineAmount = round2(qty * price - disc);
     sumAmount += lineAmount;
     storedExcl += lineAmount;
   }
   let totalValue = 0;
+  let totalBeforeVat = 0;
   let totalVat = 0;
+  let totalAfterVat = 0;
   let totalAmount = 0;
   switch (vatType) {
     case 0:
       totalValue = sumAmount;
-      totalVat = 0;
-      totalAmount = sumAmount;
+      totalBeforeVat = sumAmount;
+      totalVat = round2((sumAmount * 7) / 100);
+      totalAfterVat = round2(sumAmount + totalVat);
+      totalAmount = totalAfterVat;
       break;
     case 1:
-      totalValue = round2((sumAmount * 100) / 107);
-      totalVat = round2(sumAmount - totalValue);
+      totalValue = sumAmount;
+      totalBeforeVat = round2((sumAmount * 100) / 107);
+      totalVat = round2(sumAmount - totalBeforeVat);
+      totalAfterVat = sumAmount;
       totalAmount = sumAmount;
       break;
     case 2:
       totalValue = sumAmount;
-      totalVat = round2((sumAmount * 7) / 100);
-      totalAmount = round2(sumAmount + totalVat);
+      totalBeforeVat = 0;
+      totalVat = 0;
+      totalAfterVat = 0;
+      totalAmount = sumAmount;
+      break;
+    case 3:
+      totalValue = sumAmount;
+      totalBeforeVat = 0;
+      totalVat = 0;
+      totalAfterVat = 0;
+      totalAmount = sumAmount;
       break;
     default:
       totalValue = storedExcl;
+      totalBeforeVat = storedExcl;
       totalVat = storedVat;
-      totalAmount = round2(storedExcl + storedVat);
+      totalAfterVat = round2(storedExcl + storedVat);
+      totalAmount = totalAfterVat;
       break;
   }
   return {
     totalValue: totalValue.toFixed(2),
+    totalBeforeVat: totalBeforeVat.toFixed(2),
     totalVatValue: totalVat.toFixed(2),
+    totalAfterVat: totalAfterVat.toFixed(2),
+    totalExceptVat: "0.00",
     totalAmount: totalAmount.toFixed(2),
   };
+}
+
+function recomputedTotalsForItem(item: BulkDocumentChangeItem, perDocEdits: Map<string, PerDocEditState>): { totalValue: string; totalBeforeVat: string; totalVatValue: string; totalAfterVat: string; totalExceptVat: string; totalAmount: string } {
+  if (!item.preview) return { totalValue: "0", totalBeforeVat: "0", totalVatValue: "0", totalAfterVat: "0", totalExceptVat: "0", totalAmount: "0" };
+  const edit = perDocEdits.get(item.docNo);
+  if (!edit) {
+    return {
+      totalValue: item.preview.totals.totalValue,
+      totalBeforeVat: item.preview.totals.totalBeforeVat ?? item.preview.after.totalBeforeVat,
+      totalVatValue: item.preview.totals.totalVatValue,
+      totalAfterVat: item.preview.totals.totalAfterVat ?? item.preview.after.totalAfterVat,
+      totalExceptVat: item.preview.totals.totalExceptVat ?? item.preview.after.totalExceptVat,
+      totalAmount: item.preview.totals.totalAmount,
+    };
+  }
+  return recomputeClientTotals(
+    item.preview.remainingLines,
+    edit.removed,
+    edit.added,
+    edit.lineEdits,
+    item.preview.after.vatType ?? item.preview.before.vatType ?? 0,
+  );
+}
+
+function applyLineEditToLine(line: DocumentDetailLine, edit?: LineEditDraft): { line: DocumentDetailLine; error: string } {
+  if (!edit) return { line, error: "" };
+  const qty = edit.qty !== undefined ? Number(edit.qty) : parseFloat2(line.qty);
+  if (!Number.isInteger(qty) || qty <= 0) return { line, error: "จำนวนไม่ถูกต้อง" };
+  const price = edit.price !== undefined ? Number(edit.price) : parseFloat2(line.price);
+  if (!Number.isFinite(price) || price < 0) return { line, error: "ราคาไม่ถูกต้อง" };
+  const discount = edit.discount !== undefined ? edit.discount : line.discount;
+  const discountResult = computeSmlDiscountAmount(qty, price, discount);
+  if (discountResult.error) return { line, error: "ส่วนลดไม่ถูกต้อง" };
+  const sumAmount = round2(qty * price - discountResult.amount);
+  if (sumAmount < -0.005) return { line, error: "ส่วนลดมากกว่ายอดสินค้า" };
+  return {
+    line: {
+      ...line,
+      qty: qty.toFixed(2),
+      price: price.toFixed(2),
+      discount,
+      sumAmount: Math.max(0, sumAmount).toFixed(2),
+    },
+    error: "",
+  };
+}
+
+function lineEditError(line: DocumentDetailLine, edit: LineEditDraft): string {
+  return applyLineEditToLine(line, edit).error;
+}
+
+function computeSmlDiscountAmount(qty: number, price: number, discountText: string): { amount: number; error: string } {
+  const text = discountText.trim();
+  if (!text) return { amount: 0, error: "" };
+  let remaining = round2(qty * price);
+  let total = 0;
+  for (const rawPart of text.split(",")) {
+    const part = rawPart.trim();
+    if (!part) continue;
+    let amount = 0;
+    if (part.endsWith("%")) {
+      const percent = Number(part.slice(0, -1).trim());
+      if (!Number.isFinite(percent) || percent < 0) return { amount: 0, error: "invalid percent" };
+      amount = round2((remaining * percent) / 100);
+    } else {
+      const fixed = Number(part);
+      if (!Number.isFinite(fixed) || fixed < 0) return { amount: 0, error: "invalid amount" };
+      amount = round2(fixed * qty);
+    }
+    total = round2(total + amount);
+    remaining = round2(remaining - amount);
+    if (remaining < -0.005) return { amount: 0, error: "discount exceeds line amount" };
+    if (remaining < 0) remaining = 0;
+  }
+  return { amount: total, error: "" };
+}
+
+function formatQtyInput(value: string) {
+  const qty = parseFloat2(value);
+  return qty > 0 ? String(Math.round(qty)) : "";
+}
+
+function formatPriceInput(value: string) {
+  const price = parseFloat2(value);
+  return price >= 0 ? String(price) : "";
+}
+
+function updateLineEditDraft(
+  current: PerDocEditState,
+  line: DocumentDetailLine,
+  field: keyof LineEditDraft,
+  value: string,
+): PerDocEditState {
+  const nextLineEdits = new Map(current.lineEdits);
+  const existing = { ...(nextLineEdits.get(line.rowOrder) ?? {}) };
+  const nextValue = value.trim();
+  const originalValue = originalLineFieldValue(line, field);
+  if (nextValue === originalValue) {
+    delete existing[field];
+  } else {
+    existing[field] = nextValue;
+  }
+  if (existing.qty === undefined && existing.price === undefined && existing.discount === undefined) {
+    nextLineEdits.delete(line.rowOrder);
+  } else {
+    nextLineEdits.set(line.rowOrder, existing);
+  }
+  return { ...current, lineEdits: nextLineEdits };
+}
+
+function originalLineFieldValue(line: DocumentDetailLine, field: keyof LineEditDraft): string {
+  switch (field) {
+    case "qty":
+      return formatQtyInput(line.qty);
+    case "price":
+      return formatPriceInput(line.price);
+    case "discount":
+      return line.discount.trim();
+    default:
+      return "";
+  }
 }
 
 function EditableDocumentLinesPanel({
   docNo,
   lines,
   removed,
+  lineEdits,
   added,
   onToggleRemove,
+  onLineFieldChange,
   onRemoveAdded,
   onAdd,
 }: {
   docNo: string;
   lines: DocumentDetailLine[];
   removed?: Set<string>;
+  lineEdits?: Map<number, LineEditDraft>;
   added: NewLineInput[];
   onToggleRemove: (itemCode: string) => void;
+  onLineFieldChange: (line: DocumentDetailLine, field: keyof LineEditDraft, value: string) => void;
   onRemoveAdded: (index: number) => void;
   onAdd: (line: NewLineInput) => void;
 }) {
   const removedSet = removed ?? new Set<string>();
-  const totalRows = lines.length + added.length;
+  const lineEditMap = lineEdits ?? new Map<number, LineEditDraft>();
+  const removedLineCount = lines.filter((line) => removedSet.has(line.itemCode)).length;
+  const activeLineCount = lines.length - removedLineCount + added.length;
   // ซ่อนฟีเจอร์“เพิ่มสินค้า”ตามคำขอผู้ใช้: พรีวิวให้ใช้การลบ/ติดลบเท่านั้น.
   void onAdd;
   void onRemoveAdded;
@@ -1961,8 +2625,8 @@ function EditableDocumentLinesPanel({
         <Stack direction="row" spacing={1} sx={{ alignItems: "center", justifyContent: "space-between" }}>
           <EmphasisText>รายการสินค้าในบิล {docNo}</EmphasisText>
           <Stack direction="row" spacing={0.75} sx={{ alignItems: "center" }}>
-            <Chip label={`${totalRows - removedSet.size} รายการ`} size="small" />
-            {removedSet.size ? <Chip color="warning" label={`ลบ ${removedSet.size}`} size="small" /> : null}
+            <Chip label={`${activeLineCount} รายการ`} size="small" />
+            {removedLineCount ? <Chip color="warning" label={`ลบ ${removedLineCount}`} size="small" /> : null}
             {added.length ? <Chip color="success" label={`เพิ่ม ${added.length}`} size="small" /> : null}
           </Stack>
         </Stack>
@@ -1983,6 +2647,15 @@ function EditableDocumentLinesPanel({
             <TableBody>
               {lines.map((line) => {
                 const isRemoved = removedSet.has(line.itemCode);
+                const edit = lineEditMap.get(line.rowOrder);
+                const qtyValue = edit?.qty ?? formatQtyInput(line.qty);
+                const priceValue = edit?.price ?? formatPriceInput(line.price);
+                const discountValue = edit && "discount" in edit ? edit.discount ?? "" : line.discount;
+                const applied = applyLineEditToLine(line, edit);
+                const effectiveLine = applied.line;
+                const qtyInvalid = Boolean(edit?.qty !== undefined && (!Number.isInteger(Number(qtyValue)) || Number(qtyValue) <= 0));
+                const priceInvalid = Boolean(edit?.price !== undefined && (!Number.isFinite(Number(priceValue)) || Number(priceValue) < 0));
+                const discountInvalid = Boolean(edit?.discount !== undefined && applied.error);
                 return (
                   <TableRow key={`l-${line.lineNumber}-${line.itemCode}`} sx={isRemoved ? { textDecoration: "line-through", opacity: 0.55, bgcolor: "action.hover" } : undefined}>
                     <TableCell>
@@ -2002,18 +2675,47 @@ function EditableDocumentLinesPanel({
                     </TableCell>
                     <TableCell><DocCode value={line.itemCode} /></TableCell>
                     <TableCell>{line.itemName}</TableCell>
-                    <TableCell align="right">{line.qty}</TableCell>
+                    <TableCell align="right" sx={{ minWidth: 112 }}>
+                      <TextField
+                        error={qtyInvalid}
+                        disabled={isRemoved}
+                        onChange={(event) => onLineFieldChange(line, "qty", event.target.value)}
+                        size="small"
+                        slotProps={{ htmlInput: { min: "1", step: "1", style: { textAlign: "right" } } }}
+                        type="number"
+                        value={qtyValue}
+                      />
+                    </TableCell>
                     <TableCell>{line.unitCode}</TableCell>
-                    <TableCell align="right">{formatMoney(line.price)}</TableCell>
-                    <TableCell align="right">{formatMoney(line.discount)}</TableCell>
-                    <TableCell align="right"><Money value={formatMoney(line.sumAmount)} /></TableCell>
+                    <TableCell align="right" sx={{ minWidth: 116 }}>
+                      <TextField
+                        error={priceInvalid}
+                        disabled={isRemoved}
+                        onChange={(event) => onLineFieldChange(line, "price", event.target.value)}
+                        size="small"
+                        slotProps={{ htmlInput: { min: "0", step: "0.01", style: { textAlign: "right" } } }}
+                        type="number"
+                        value={priceValue}
+                      />
+                    </TableCell>
+                    <TableCell align="right" sx={{ minWidth: 112 }}>
+                      <TextField
+                        error={discountInvalid}
+                        disabled={isRemoved}
+                        onChange={(event) => onLineFieldChange(line, "discount", event.target.value)}
+                        size="small"
+                        slotProps={{ htmlInput: { style: { textAlign: "right" } } }}
+                        value={discountValue}
+                      />
+                    </TableCell>
+                    <TableCell align="right"><Money value={formatMoney(effectiveLine.sumAmount)} /></TableCell>
                   </TableRow>
                 );
               })}
               {added.map((a, idx) => {
                 const qty = parseFloat2(a.qty);
                 const price = parseFloat2(a.price);
-                const disc = parseFloat2(a.discount);
+                const disc = computeSmlDiscountAmount(qty, price, a.discount).amount;
                 const lineAmount = round2(qty * price - disc);
                 return (
                   <TableRow key={`a-${idx}-${a.itemCode}`} sx={{ bgcolor: "success.50" }}>
@@ -2031,7 +2733,7 @@ function EditableDocumentLinesPanel({
                       </Stack>
                     </TableCell>
                     <TableCell>{a.itemName}</TableCell>
-                    <TableCell align="right">{a.qty}</TableCell>
+                    <TableCell align="right">{formatMoney(a.qty)}</TableCell>
                     <TableCell>{a.unitCode}</TableCell>
                     <TableCell align="right">{formatMoney(a.price)}</TableCell>
                     <TableCell align="right">{formatMoney(a.discount)}</TableCell>
@@ -2039,7 +2741,7 @@ function EditableDocumentLinesPanel({
                   </TableRow>
                 );
               })}
-              {totalRows === 0 ? (
+              {activeLineCount === 0 ? (
                 <TableRow>
                   <TableCell colSpan={8}>
                     <Typography color="text.secondary" sx={{ textAlign: "center", py: 2 }} variant="body2">

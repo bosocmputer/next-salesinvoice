@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -12,6 +13,8 @@ import (
 	"next-salesinvoice/backend/internal/config"
 	"next-salesinvoice/backend/internal/model"
 )
+
+var auditBangkokLocation = time.FixedZone("Asia/Bangkok", 7*60*60)
 
 type AuditRepository struct {
 	pool *pgxpool.Pool
@@ -154,6 +157,9 @@ func (r *AuditRepository) DocumentHistory(ctx context.Context, docNo string, lim
 		); err != nil {
 			return nil, fmt.Errorf("scan document history: %w", err)
 		}
+		item.CreatedAt = timestampWithoutTZAsBangkok(item.CreatedAt)
+		item.RolledBackAt = timestampWithoutTZPtrAsBangkok(item.RolledBackAt)
+		item.Message = userFacingBatchItemMessage(item.Message)
 		var snapshot struct {
 			SummaryRaw      json.RawMessage `json:"summaryRaw"`
 			DetailsRaw      json.RawMessage `json:"detailsRaw"`
@@ -219,6 +225,23 @@ func (r *AuditRepository) currentDocumentRaw(ctx context.Context, docNo string) 
 		ICTrans:       defaultRawJSON(header, `{}`),
 		ICTransDetail: defaultRawJSON(details, `[]`),
 	}, nil
+}
+
+func timestampWithoutTZAsBangkok(t time.Time) time.Time {
+	if t.IsZero() {
+		return t
+	}
+	year, month, day := t.Date()
+	hour, minute, second := t.Clock()
+	return time.Date(year, month, day, hour, minute, second, t.Nanosecond(), auditBangkokLocation)
+}
+
+func timestampWithoutTZPtrAsBangkok(t *time.Time) *time.Time {
+	if t == nil {
+		return nil
+	}
+	localized := timestampWithoutTZAsBangkok(*t)
+	return &localized
 }
 
 func cloneRawJSON(value []byte) json.RawMessage {
