@@ -6,7 +6,7 @@
 
 ## สถานะล่าสุด
 
-อัปเดตล่าสุด: 2026-05-20 Asia/Bangkok
+อัปเดตล่าสุด: 2026-06-22 Asia/Bangkok
 
 - Backend: Go + Gin + pgx/PostgreSQL
 - Frontend: React + Vite + Material UI v9 + `@uiw/react-json-view`
@@ -17,15 +17,13 @@
 - **Color mode**: รองรับ light / dark / auto (ตาม OS) — สลับได้จาก header และหน้า login, persist ใน localStorage, ฟัง `prefers-color-scheme` แบบ live
 - **Brand assets**: flat geometric "N" mark ใน `frontend/public/` (favicon SVG/PNG, apple-touch-icon, PWA 192/512, OG 1200×630)
 - `GET /api/v1/system/database-status` เป็น read-only verify
-- การสร้างตาราง `nsi_*` ต้องเป็น Admin action ผ่าน `POST /api/v1/system/database-migrate`
-- การตั้งค่า database connection บังคับผ่าน `.env` เท่านั้น ไม่มี UI สำหรับเปลี่ยน runtime
-- Production deploy ผ่าน HTTPS เท่านั้น (Secure cookie); LAN HTTP เข้าระบบไม่ได้
-- คู่มือติดตั้งฝั่งลูกค้า: [`docs/INSTALL_UBUNTU.md`](docs/INSTALL_UBUNTU.md)
+- การสร้างตาราง `nsi_*` ทำได้ 2 ทาง: Admin action ผ่าน `POST /api/v1/system/database-migrate` หรือ bootstrap ครั้งแรก (ยังไม่มี admin) ผ่าน `POST /api/v1/system/database-migrate/bootstrap`
+- การตั้งค่า database connection บังคับผ่าน `.env`/compose เท่านั้น ไม่มี UI สำหรับเปลี่ยน runtime
+- Cookie `Secure` ควบคุมด้วย `COOKIE_SECURE` (default = `APP_ENV==production`); เมื่อเข้าผ่าน HTTP บน private network (Zerotier) ให้ตั้ง `COOKIE_SECURE=false` มิฉะนั้น login ไม่ติด — ดู [`backend/internal/config/config.go`](backend/internal/config/config.go)
+- คู่มือติดตั้งฝั่งลูกค้า: [`docs/INSTALL_UBUNTU.md`](docs/INSTALL_UBUNTU.md) (generic) · บันทึก deploy จริงต่อไซต์: [`docs/DEPLOY_KRABIYANG_THONG.md`](docs/DEPLOY_KRABIYANG_THONG.md)
 - Verification ล่าสุดใน session นี้:
-  - `npm run build`: Pass
   - `go test ./...`: Pass
-  - Playwright + axe-core (`frontend/tests/e2e/a11y.spec.ts`): 0 violations
-  - Deploy smoke ผ่าน cloudflare quick tunnel ล่าสุด
+  - Deploy krabiyang-thong (prod ลูกค้า) ผ่าน: health/db-status/login ทำงาน, index 7/7 valid, SML 13 service เดิมไม่กระทบ
 
 ## ใช้ทำอะไร
 

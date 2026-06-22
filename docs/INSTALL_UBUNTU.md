@@ -3,6 +3,10 @@
 เอกสารนี้ใช้สำหรับการนำ stack ทั้งระบบไปติดตั้งที่ **เครื่อง server ของลูกค้า** ที่ใช้ Ubuntu
 รองรับ Ubuntu **22.04 LTS** และ **24.04 LTS** (x86_64)
 
+> **หมายเหตุ:** เอกสารนี้เป็นคู่มือ *generic* (สมมติเครื่องเปล่า + ใช้ nginx/certbot host).
+> ไซต์ที่มี SML stack + Traefik อยู่แล้วจะ **ไม่** ใช้ nginx/certbot host และจะ build image ที่อื่นแล้ว load
+> (กัน disk เต็มชน Postgres) — ดูตัวอย่างจริงที่ deploy แล้ว: [`DEPLOY_KRABIYANG_THONG.md`](DEPLOY_KRABIYANG_THONG.md)
+
 ---
 
 ## 0. ภาพรวม Stack
