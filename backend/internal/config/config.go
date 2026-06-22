@@ -42,6 +42,12 @@ type Config struct {
 	// network (e.g. Zerotier) where a Secure cookie would never be sent
 	// and login would silently fail.
 	CookieSecure bool
+	// AllowedDatabases restricts which PostgreSQL databases users may select
+	// on the login page. Set ALLOWED_DATABASES="data2,data20" in compose.
+	// When empty, all non-template databases returned by pg_database are
+	// allowed. Always set this in production to prevent internal databases
+	// (postgres, template0, template1) from appearing in the dropdown.
+	AllowedDatabases []string
 }
 
 func Load() (Config, error) {
@@ -67,6 +73,7 @@ func Load() (Config, error) {
 		DBIdleTxTimeout:              time.Duration(getEnvInt("SML_DB_IDLE_TX_TIMEOUT_SECONDS", 10)) * time.Second,
 		CbTransSyncEnabled:           getEnvBool("NSI_CB_TRANS_SYNC", true),
 		CookieSecure:                 getEnvBool("COOKIE_SECURE", appEnv == "production"),
+		AllowedDatabases:             parseEnvStringSlice("ALLOWED_DATABASES"),
 	}
 	return cfg, cfg.Validate()
 }
@@ -161,4 +168,19 @@ func getEnvBool(key string, fallback bool) bool {
 		return fallback
 	}
 	return value == "1" || value == "true" || value == "yes" || value == "on"
+}
+
+func parseEnvStringSlice(key string) []string {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if s := strings.TrimSpace(p); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }

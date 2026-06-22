@@ -5,9 +5,11 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
 
 	"next-salesinvoice/backend/internal/audit"
+	"next-salesinvoice/backend/internal/config"
 	"next-salesinvoice/backend/internal/model"
 	"next-salesinvoice/backend/internal/repository"
 	"next-salesinvoice/backend/internal/session"
@@ -30,30 +32,32 @@ type LoginResult struct {
 }
 
 type AuthService struct {
-	erpUsers *repository.ERPUserRepository
-	appUsers *repository.AppUserRepository
-	audit    *audit.Logger
+	cfg      config.Config
 	sessions *session.Manager
 }
 
 func NewAuthService(
-	erpUsers *repository.ERPUserRepository,
-	appUsers *repository.AppUserRepository,
-	auditLogger *audit.Logger,
+	cfg config.Config,
 	sessions *session.Manager,
 ) *AuthService {
-	return &AuthService{erpUsers: erpUsers, appUsers: appUsers, audit: auditLogger, sessions: sessions}
+	return &AuthService{cfg: cfg, sessions: sessions}
 }
 
-func (s *AuthService) Login(ctx context.Context, code, password string, meta AuditMeta) (LoginResult, error) {
+// Login validates credentials against the given pool (which may point to any
+// allowed database) and issues a session token embedding dbName.
+func (s *AuthService) Login(ctx context.Context, pool *pgxpool.Pool, dbName, code, password string, meta AuditMeta) (LoginResult, error) {
 	code = strings.TrimSpace(code)
 	if code == "" || password == "" {
 		return LoginResult{}, ErrInvalidCredentials
 	}
 
-	erpUser, err := s.erpUsers.FindByCode(ctx, code)
+	erpUsers := repository.NewERPUserRepository(pool, s.cfg)
+	appUsers := repository.NewAppUserRepository(pool, s.cfg)
+	auditLogger := audit.NewLogger(pool, s.cfg)
+
+	erpUser, err := erpUsers.FindByCode(ctx, code)
 	if err != nil {
-		_ = s.audit.Write(ctx, audit.Entry{
+		_ = auditLogger.Write(ctx, audit.Entry{
 			UserCode:     code,
 			Action:       "login_failed",
 			ResourceType: "auth",
@@ -65,7 +69,7 @@ func (s *AuthService) Login(ctx context.Context, code, password string, meta Aud
 		return LoginResult{}, ErrInvalidCredentials
 	}
 	if !passwordMatches(erpUser, password) {
-		_ = s.audit.Write(ctx, audit.Entry{
+		_ = auditLogger.Write(ctx, audit.Entry{
 			UserCode:     code,
 			Action:       "login_failed",
 			ResourceType: "auth",
@@ -77,7 +81,7 @@ func (s *AuthService) Login(ctx context.Context, code, password string, meta Aud
 		return LoginResult{}, ErrInvalidCredentials
 	}
 	if erpUser.Status != 1 {
-		_ = s.audit.Write(ctx, audit.Entry{
+		_ = auditLogger.Write(ctx, audit.Entry{
 			UserCode:     code,
 			Action:       "login_failed",
 			ResourceType: "auth",
@@ -89,7 +93,7 @@ func (s *AuthService) Login(ctx context.Context, code, password string, meta Aud
 		return LoginResult{}, ErrUserInactive
 	}
 
-	appUser, err := s.appUsers.FindOrProvision(ctx, erpUser)
+	appUser, err := appUsers.FindOrProvision(ctx, erpUser)
 	if err != nil {
 		return LoginResult{}, err
 	}
@@ -97,16 +101,16 @@ func (s *AuthService) Login(ctx context.Context, code, password string, meta Aud
 		return LoginResult{}, ErrUserInactive
 	}
 
-	token, claims, err := s.sessions.Issue(appUser.ERPUserCode, appUser.DisplayName, appUser.Role)
+	token, claims, err := s.sessions.Issue(appUser.ERPUserCode, appUser.DisplayName, appUser.Role, dbName)
 	if err != nil {
 		return LoginResult{}, err
 	}
-	_ = s.audit.Write(ctx, audit.Entry{
+	_ = auditLogger.Write(ctx, audit.Entry{
 		UserCode:     code,
 		Action:       "login_success",
 		ResourceType: "auth",
 		ResourceID:   code,
-		After:        map[string]any{"role": appUser.Role},
+		After:        map[string]any{"role": appUser.Role, "db": dbName},
 		IPAddress:    meta.IPAddress,
 		UserAgent:    meta.UserAgent,
 	})

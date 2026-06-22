@@ -21,6 +21,7 @@ export type UserClaims = {
   userCode: string;
   displayName: string;
   role: string;
+  dbName: string;
 };
 
 export type DocumentSummary = {

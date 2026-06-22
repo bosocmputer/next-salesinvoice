@@ -9,7 +9,7 @@ import (
 func TestManagerIssueAndParse(t *testing.T) {
 	manager := NewManager("test-secret-at-least-32-characters", time.Hour)
 
-	token, issued, err := manager.Issue("EMP001", "พนักงานขายหน้าร้าน", "Admin")
+	token, issued, err := manager.Issue("EMP001", "พนักงานขายหน้าร้าน", "Admin", "data2")
 	if err != nil {
 		t.Fatalf("Issue() error = %v", err)
 	}
@@ -21,7 +21,7 @@ func TestManagerIssueAndParse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse() error = %v", err)
 	}
-	if parsed.UserCode != issued.UserCode || parsed.DisplayName != issued.DisplayName || parsed.Role != issued.Role {
+	if parsed.UserCode != issued.UserCode || parsed.DisplayName != issued.DisplayName || parsed.Role != issued.Role || parsed.DbName != issued.DbName {
 		t.Fatalf("parsed claims mismatch: got %+v want %+v", parsed, issued)
 	}
 }
@@ -29,7 +29,7 @@ func TestManagerIssueAndParse(t *testing.T) {
 func TestManagerRejectsTamperedToken(t *testing.T) {
 	manager := NewManager("test-secret-at-least-32-characters", time.Hour)
 
-	token, _, err := manager.Issue("EMP001", "User", "Admin")
+	token, _, err := manager.Issue("EMP001", "User", "Admin", "data2")
 	if err != nil {
 		t.Fatalf("Issue() error = %v", err)
 	}
@@ -47,7 +47,7 @@ func TestManagerRejectsTamperedToken(t *testing.T) {
 func TestManagerRejectsExpiredToken(t *testing.T) {
 	manager := NewManager("test-secret-at-least-32-characters", -time.Second)
 
-	token, _, err := manager.Issue("EMP001", "User", "Admin")
+	token, _, err := manager.Issue("EMP001", "User", "Admin", "data2")
 	if err != nil {
 		t.Fatalf("Issue() error = %v", err)
 	}

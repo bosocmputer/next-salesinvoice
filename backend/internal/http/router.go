@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"next-salesinvoice/backend/internal/appruntime"
@@ -18,7 +19,9 @@ import (
 	"next-salesinvoice/backend/internal/config"
 	"next-salesinvoice/backend/internal/errorcode"
 	"next-salesinvoice/backend/internal/metrics"
+	"next-salesinvoice/backend/internal/migration"
 	"next-salesinvoice/backend/internal/model"
+	"next-salesinvoice/backend/internal/repository"
 	"next-salesinvoice/backend/internal/response"
 	"next-salesinvoice/backend/internal/service"
 	"next-salesinvoice/backend/internal/session"
@@ -51,6 +54,7 @@ func NewRouter(
 	api.GET("/health", deps.health)
 	api.GET("/healthz", deps.health)
 	api.GET("/readyz", deps.readyz)
+	api.GET("/system/databases", deps.databaseList)
 	api.GET("/system/database-status", deps.databaseStatus)
 	api.POST("/system/database-migrate/bootstrap", deps.writeRateLimiter("database_migrate_bootstrap", 5), deps.databaseMigrateBootstrap)
 	api.POST("/system/database-migrate", deps.authMiddleware(), deps.requireRole("Admin"), deps.databaseMigrate)
@@ -90,7 +94,7 @@ func (d RouterDeps) documentsList(c *gin.Context) {
 	}
 	page := parseBoundedInt(c.Query("page"), 1, 1, 100000)
 	pageSize := parseBoundedInt(c.Query("pageSize"), 50, 1, 100)
-	items, hasMore, total, err := d.state.Current().Documents.List(c.Request.Context(), from, to, page, pageSize, c.Query("q"))
+	items, hasMore, total, err := d.docs(c).List(c.Request.Context(), from, to, page, pageSize, c.Query("q"))
 	if err != nil {
 		response.Error(c, nethttp.StatusInternalServerError, errorcode.DBConnection, "load documents failed", err.Error())
 		return
@@ -110,7 +114,7 @@ func (d RouterDeps) selectableDocumentNumbers(c *gin.Context) {
 		return
 	}
 	limit := parseBoundedInt(c.Query("limit"), 300, 1, 300)
-	items, hasMore, err := d.state.Current().Documents.ListDocNos(c.Request.Context(), from, to, c.Query("q"), limit)
+	items, hasMore, err := d.docs(c).ListDocNos(c.Request.Context(), from, to, c.Query("q"), limit)
 	if err != nil {
 		response.Error(c, nethttp.StatusInternalServerError, errorcode.DBConnection, "load selectable documents failed", err.Error())
 		return
@@ -129,7 +133,7 @@ func (d RouterDeps) documentDetails(c *gin.Context) {
 		response.Error(c, nethttp.StatusBadRequest, errorcode.InvalidInput, "invalid document", "docNo is required")
 		return
 	}
-	items, err := d.state.Current().Documents.Details(c.Request.Context(), docNo)
+	items, err := d.docs(c).Details(c.Request.Context(), docNo)
 	if err != nil {
 		response.Error(c, nethttp.StatusInternalServerError, errorcode.DBConnection, "load document details failed", err.Error())
 		return
@@ -148,7 +152,7 @@ func (d RouterDeps) documentChangePreview(c *gin.Context) {
 		return
 	}
 	claims := c.MustGet("claims").(session.Claims)
-	preview, err := d.state.Current().Documents.PreviewChange(c.Request.Context(), docNo, req)
+	preview, err := d.docs(c).PreviewChange(c.Request.Context(), docNo, req)
 	if err != nil {
 		d.writeDocumentAudit(c, claims, "document.preview_change_failed", docNo, gin.H{
 			"request": req,
@@ -176,7 +180,7 @@ func (d RouterDeps) documentChangeApply(c *gin.Context) {
 		return
 	}
 	claims := c.MustGet("claims").(session.Claims)
-	preview, err := d.state.Current().Documents.ApplyChangeWithSnapshot(c.Request.Context(), docNo, req, claims.UserCode)
+	preview, err := d.docs(c).ApplyChangeWithSnapshot(c.Request.Context(), docNo, req, claims.UserCode)
 	if err != nil {
 		d.writeDocumentAudit(c, claims, "document.apply_change_failed", docNo, gin.H{
 			"request": req,
@@ -199,7 +203,7 @@ func (d RouterDeps) bulkDocumentChangePreview(c *gin.Context) {
 		return
 	}
 	claims := c.MustGet("claims").(session.Claims)
-	result, err := d.state.Current().Documents.BulkPreviewChange(c.Request.Context(), req)
+	result, err := d.docs(c).BulkPreviewChange(c.Request.Context(), req)
 	if err != nil {
 		d.writeDocumentAudit(c, claims, "bulk.preview_change_failed", "bulk", gin.H{"request": req}, gin.H{"error": err.Error()})
 		response.Error(c, nethttp.StatusBadRequest, errorcode.InvalidInput, "preview bulk document change failed", err.Error())
@@ -220,7 +224,7 @@ func (d RouterDeps) bulkDocumentChangeApply(c *gin.Context) {
 		return
 	}
 	claims := c.MustGet("claims").(session.Claims)
-	result, err := d.state.Current().Documents.BulkApplyChange(c.Request.Context(), req, claims.UserCode)
+	result, err := d.docs(c).BulkApplyChange(c.Request.Context(), req, claims.UserCode)
 	if err != nil {
 		metrics.BulkApplyDocumentsTotal.WithLabelValues("error").Add(float64(len(req.DocNos)))
 		d.writeDocumentAudit(c, claims, "bulk.apply_change_failed", "bulk", gin.H{"request": req}, gin.H{"error": err.Error()})
@@ -255,7 +259,7 @@ func (d RouterDeps) bulkDocumentChangeApplyStart(c *gin.Context) {
 		return
 	}
 	claims := c.MustGet("claims").(session.Claims)
-	progress, err := d.state.Current().Documents.StartBulkApplyChange(c.Request.Context(), req, claims.UserCode)
+	progress, err := d.docs(c).StartBulkApplyChange(c.Request.Context(), req, claims.UserCode)
 	if err != nil {
 		metrics.BulkApplyDocumentsTotal.WithLabelValues("error").Add(float64(len(req.DocNos)))
 		d.writeDocumentAudit(c, claims, "bulk.apply_change_start_failed", "bulk", gin.H{"request": req}, gin.H{"error": err.Error()})
@@ -275,7 +279,7 @@ func (d RouterDeps) bulkDocumentChangeBatch(c *gin.Context) {
 	if !ok {
 		return
 	}
-	progress, err := d.state.Current().Documents.BulkApplyBatchProgress(c.Request.Context(), batchID)
+	progress, err := d.docs(c).BulkApplyBatchProgress(c.Request.Context(), batchID)
 	if err != nil {
 		response.Error(c, nethttp.StatusNotFound, errorcode.NotFound, "load bulk apply batch failed", err.Error())
 		return
@@ -289,7 +293,7 @@ func (d RouterDeps) bulkDocumentChangeRetryFailed(c *gin.Context) {
 		return
 	}
 	claims := c.MustGet("claims").(session.Claims)
-	progress, err := d.state.Current().Documents.RetryFailedBulkApplyChange(c.Request.Context(), batchID, claims.UserCode)
+	progress, err := d.docs(c).RetryFailedBulkApplyChange(c.Request.Context(), batchID, claims.UserCode)
 	if err != nil {
 		d.writeDocumentAudit(c, claims, "bulk.apply_change_retry_failed", "bulk", gin.H{"batchId": batchID}, gin.H{"error": err.Error()})
 		response.Error(c, nethttp.StatusBadRequest, errorcode.InvalidInput, "retry failed bulk documents failed", err.Error())
@@ -310,7 +314,7 @@ func (d RouterDeps) documentRollback(c *gin.Context) {
 		return
 	}
 	claims := c.MustGet("claims").(session.Claims)
-	result, err := d.state.Current().Documents.RollbackDocument(c.Request.Context(), req, claims.UserCode)
+	result, err := d.docs(c).RollbackDocument(c.Request.Context(), req, claims.UserCode)
 	if err != nil {
 		d.writeDocumentAudit(c, claims, "document.rollback_failed", req.DocNo, gin.H{"request": req}, gin.H{"error": err.Error()})
 		response.Error(c, nethttp.StatusBadRequest, errorcode.InvalidInput, "rollback document failed", err.Error())
@@ -321,7 +325,7 @@ func (d RouterDeps) documentRollback(c *gin.Context) {
 }
 
 func (d RouterDeps) writeDocumentAudit(c *gin.Context, claims session.Claims, action, docNo string, before, after any) {
-	_ = d.state.Current().Audit.Write(c.Request.Context(), audit.Entry{
+	_ = d.auditLog(c).Write(c.Request.Context(), audit.Entry{
 		UserCode:     claims.UserCode,
 		Action:       action,
 		ResourceType: "ic_trans",
@@ -347,7 +351,7 @@ func documentAuditAfter(preview model.DocumentChangePreview, req model.DocumentC
 }
 
 func (d RouterDeps) docFormats(c *gin.Context) {
-	items, err := d.state.Current().Documents.DocFormats(c.Request.Context())
+	items, err := d.docs(c).DocFormats(c.Request.Context())
 	if err != nil {
 		response.Error(c, nethttp.StatusInternalServerError, errorcode.DBConnection, "load document formats failed", err.Error())
 		return
@@ -362,7 +366,7 @@ func (d RouterDeps) runningNumber(c *gin.Context) {
 		return
 	}
 	sourceDocNo := strings.TrimSpace(c.Query("sourceDocNo"))
-	nextDocNo, latestDocNo, err := d.state.Current().Documents.NextDocNo(c.Request.Context(), formatCode, sourceDocNo)
+	nextDocNo, latestDocNo, err := d.docs(c).NextDocNo(c.Request.Context(), formatCode, sourceDocNo)
 	if err != nil {
 		response.Error(c, nethttp.StatusInternalServerError, errorcode.DBConnection, "load running number failed", err.Error())
 		return
@@ -371,7 +375,7 @@ func (d RouterDeps) runningNumber(c *gin.Context) {
 }
 
 func (d RouterDeps) customers(c *gin.Context) {
-	items, err := d.state.Current().Documents.SearchCustomers(c.Request.Context(), c.Query("q"), parseBoundedInt(c.Query("limit"), 20, 1, 50))
+	items, err := d.docs(c).SearchCustomers(c.Request.Context(), c.Query("q"), parseBoundedInt(c.Query("limit"), 20, 1, 50))
 	if err != nil {
 		response.Error(c, nethttp.StatusInternalServerError, errorcode.DBConnection, "load customers failed", err.Error())
 		return
@@ -380,7 +384,7 @@ func (d RouterDeps) customers(c *gin.Context) {
 }
 
 func (d RouterDeps) products(c *gin.Context) {
-	items, err := d.state.Current().Documents.SearchProducts(c.Request.Context(), c.Query("q"), parseBoundedInt(c.Query("limit"), 20, 1, 50))
+	items, err := d.docs(c).SearchProducts(c.Request.Context(), c.Query("q"), parseBoundedInt(c.Query("limit"), 20, 1, 50))
 	if err != nil {
 		response.Error(c, nethttp.StatusInternalServerError, errorcode.DBConnection, "load products failed", err.Error())
 		return
@@ -394,7 +398,7 @@ func (d RouterDeps) productUnits(c *gin.Context) {
 		response.Error(c, nethttp.StatusBadRequest, errorcode.InvalidInput, "invalid input", "code is required")
 		return
 	}
-	items, err := d.state.Current().Documents.ProductUnits(c.Request.Context(), code)
+	items, err := d.docs(c).ProductUnits(c.Request.Context(), code)
 	if err != nil {
 		response.Error(c, nethttp.StatusInternalServerError, errorcode.DBConnection, "load product units failed", err.Error())
 		return
@@ -428,7 +432,7 @@ func (d RouterDeps) documentsItems(c *gin.Context) {
 		response.Error(c, nethttp.StatusBadRequest, errorcode.InvalidInput, "too many documents", "docNos must be 500 or fewer")
 		return
 	}
-	items, err := d.state.Current().Documents.ItemsByDocs(c.Request.Context(), cleaned)
+	items, err := d.docs(c).ItemsByDocs(c.Request.Context(), cleaned)
 	if err != nil {
 		response.Error(c, nethttp.StatusInternalServerError, errorcode.DBConnection, "load items by docs failed", err.Error())
 		return
@@ -455,7 +459,7 @@ func (d RouterDeps) taxTypes(c *gin.Context) {
 }
 
 func (d RouterDeps) auditLogs(c *gin.Context) {
-	items, err := d.state.Current().Audits.List(c.Request.Context(), c.Query("resourceId"), parseBoundedInt(c.Query("limit"), 20, 1, 100))
+	items, err := d.audits(c).List(c.Request.Context(), c.Query("resourceId"), parseBoundedInt(c.Query("limit"), 20, 1, 100))
 	if err != nil {
 		response.Error(c, nethttp.StatusInternalServerError, errorcode.DBConnection, "load audit logs failed", err.Error())
 		return
@@ -464,7 +468,7 @@ func (d RouterDeps) auditLogs(c *gin.Context) {
 }
 
 func (d RouterDeps) auditDocuments(c *gin.Context) {
-	items, err := d.state.Current().Audits.DocumentHistory(c.Request.Context(), c.Query("docNo"), parseBoundedInt(c.Query("limit"), 10, 1, 50))
+	items, err := d.audits(c).DocumentHistory(c.Request.Context(), c.Query("docNo"), parseBoundedInt(c.Query("limit"), 10, 1, 50))
 	if err != nil {
 		response.Error(c, nethttp.StatusInternalServerError, errorcode.DBConnection, "load document history failed", err.Error())
 		return
@@ -548,8 +552,44 @@ func (d RouterDeps) readyz(c *gin.Context) {
 	response.OK(c, nethttp.StatusOK, "ready", gin.H{"status": "ready"})
 }
 
+// databaseList returns the list of databases the user may connect to.
+// Result is cached for 60 s in appruntime.State.
+func (d RouterDeps) databaseList(c *gin.Context) {
+	names, err := d.state.ListDatabases(c.Request.Context())
+	if err != nil {
+		response.Error(c, nethttp.StatusInternalServerError, errorcode.DBConnection, "cannot list databases", err.Error())
+		return
+	}
+	response.OK(c, nethttp.StatusOK, "ok", gin.H{"databases": names})
+}
+
+// migratorForDB returns a Migrator pointed at dbName (or the base DB if empty).
+// Validates dbName before opening any pool.
+func (d RouterDeps) migratorForDB(c *gin.Context, dbName string) (*migration.Migrator, bool) {
+	if dbName == "" {
+		return d.state.Current().Migrator, true
+	}
+	if err := d.state.ValidateDBName(c.Request.Context(), dbName); err != nil {
+		response.Error(c, nethttp.StatusBadRequest, errorcode.InvalidInput, "invalid database", err.Error())
+		return nil, false
+	}
+	pool, err := d.state.PoolFor(c.Request.Context(), dbName)
+	if err != nil {
+		response.Error(c, nethttp.StatusServiceUnavailable, errorcode.DBConnection, "cannot connect to database", err.Error())
+		return nil, false
+	}
+	cfg := d.cfg
+	cfg.DBName = dbName
+	return migration.New(pool, cfg), true
+}
+
 func (d RouterDeps) databaseStatus(c *gin.Context) {
-	status, err := d.state.Current().Migrator.Verify(c.Request.Context())
+	dbName := c.Query("db")
+	migrator, ok := d.migratorForDB(c, dbName)
+	if !ok {
+		return
+	}
+	status, err := migrator.Verify(c.Request.Context())
 	if err != nil {
 		response.Error(c, nethttp.StatusInternalServerError, errorcode.DatabaseVerification, "database verification failed", err.Error())
 		return
@@ -565,8 +605,20 @@ func (d RouterDeps) databaseMigrate(c *gin.Context) {
 	d.databaseStatus(c)
 }
 
+type bootstrapRequest struct {
+	DB string `json:"db"`
+}
+
 func (d RouterDeps) databaseMigrateBootstrap(c *gin.Context) {
-	status, err := d.state.Current().Migrator.Verify(c.Request.Context())
+	var req bootstrapRequest
+	_ = c.ShouldBindJSON(&req) // optional body — ignore parse error
+
+	migrator, ok := d.migratorForDB(c, req.DB)
+	if !ok {
+		return
+	}
+
+	status, err := migrator.Verify(c.Request.Context())
 	if err != nil {
 		response.Error(c, nethttp.StatusServiceUnavailable, errorcode.DatabaseVerification, "database verification failed", err.Error())
 		return
@@ -579,16 +631,23 @@ func (d RouterDeps) databaseMigrateBootstrap(c *gin.Context) {
 		response.OK(c, nethttp.StatusOK, "database schema already ready", status)
 		return
 	}
-	if err := d.state.Current().Migrator.Migrate(c.Request.Context()); err != nil {
+	if err := migrator.Migrate(c.Request.Context()); err != nil {
 		response.Error(c, nethttp.StatusInternalServerError, errorcode.DatabaseVerification, "database migration failed", err.Error())
 		return
 	}
-	d.databaseStatus(c)
+	// re-verify and return fresh status
+	status, err = migrator.Verify(c.Request.Context())
+	if err != nil {
+		response.Error(c, nethttp.StatusInternalServerError, errorcode.DatabaseVerification, "database verification failed", err.Error())
+		return
+	}
+	response.OK(c, nethttp.StatusOK, "ok", status)
 }
 
 type loginRequest struct {
-	Code     string `json:"code" binding:"required"`
+	Code     string `json:"code"     binding:"required"`
 	Password string `json:"password" binding:"required"`
+	DB       string `json:"db"`      // optional — defaults to cfg.DBName
 }
 
 func (d RouterDeps) login(c *gin.Context) {
@@ -597,7 +656,24 @@ func (d RouterDeps) login(c *gin.Context) {
 		response.Error(c, nethttp.StatusBadRequest, errorcode.InvalidInput, "invalid login input", "code and password are required")
 		return
 	}
-	result, err := d.state.Current().Auth.Login(c.Request.Context(), req.Code, req.Password, service.AuditMeta{
+
+	dbName := req.DB
+	if dbName == "" {
+		dbName = d.cfg.DBName
+	}
+
+	// Validate before touching credentials — prevents probing unknown databases.
+	if err := d.state.ValidateDBName(c.Request.Context(), dbName); err != nil {
+		response.Error(c, nethttp.StatusBadRequest, errorcode.InvalidInput, "invalid database", err.Error())
+		return
+	}
+	pool, err := d.state.PoolFor(c.Request.Context(), dbName)
+	if err != nil {
+		response.Error(c, nethttp.StatusServiceUnavailable, errorcode.DBConnection, "cannot connect to database", err.Error())
+		return
+	}
+
+	result, err := d.state.Current().Auth.Login(c.Request.Context(), pool, dbName, req.Code, req.Password, service.AuditMeta{
 		IPAddress: c.ClientIP(),
 		UserAgent: c.Request.UserAgent(),
 	})
@@ -649,9 +725,45 @@ func (d RouterDeps) authMiddleware() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
+
+		// Resolve the pool for this session's database.
+		// claims.DbName == "" means an old token — fall back to base pool.
+		dbName := claims.DbName
+		if dbName == "" {
+			dbName = d.cfg.DBName
+		}
+		pool, err := d.state.PoolFor(c.Request.Context(), dbName)
+		if err != nil {
+			response.Error(c, nethttp.StatusServiceUnavailable, errorcode.DBConnection, "database unavailable", "cannot connect to session database")
+			c.Abort()
+			return
+		}
+
 		c.Set("claims", claims)
+		c.Set("pool", pool)
 		c.Next()
 	}
+}
+
+// poolFromCtx returns the per-request pool injected by authMiddleware.
+func poolFromCtx(c *gin.Context) *pgxpool.Pool {
+	v, _ := c.Get("pool")
+	return v.(*pgxpool.Pool)
+}
+
+// docs returns a DocumentRepository bound to the request's session pool.
+func (d RouterDeps) docs(c *gin.Context) *repository.DocumentRepository {
+	return repository.NewDocumentRepository(poolFromCtx(c), d.cfg)
+}
+
+// audits returns an AuditRepository bound to the request's session pool.
+func (d RouterDeps) audits(c *gin.Context) *repository.AuditRepository {
+	return repository.NewAuditRepository(poolFromCtx(c), d.cfg)
+}
+
+// auditLog returns an audit.Logger bound to the request's session pool.
+func (d RouterDeps) auditLog(c *gin.Context) *audit.Logger {
+	return audit.NewLogger(poolFromCtx(c), d.cfg)
 }
 
 func (d RouterDeps) requireRole(roles ...string) gin.HandlerFunc {

@@ -118,6 +118,8 @@ class AppErrorBoundary extends Component<{ children: ReactNode }, { error: Error
 
 function AppRoutes() {
   const [status, setStatus] = useState<DatabaseStatus | null>(null);
+  const [databases, setDatabases] = useState<string[]>([]);
+  const [selectedDb, setSelectedDb] = useState<string>("");
   const [user, setUser] = useState<UserClaims | null>(null);
   const [booting, setBooting] = useState(true);
   const [loginMessage, setLoginMessage] = useState("");
@@ -170,15 +172,30 @@ function AppRoutes() {
     }
   }, [routerNavigate]);
 
-  async function refreshStatus() {
-    const statusResponse = await apiGet<DatabaseStatus>("/api/v1/system/database-status");
+  async function refreshStatus(db?: string) {
+    const dbParam = db || selectedDb;
+    const url = dbParam ? `/api/v1/system/database-status?db=${encodeURIComponent(dbParam)}` : "/api/v1/system/database-status";
+    const statusResponse = await apiGet<DatabaseStatus>(url);
     if (statusResponse.success && statusResponse.data) setStatus(statusResponse.data);
+  }
+
+  async function loadDatabases(): Promise<string> {
+    const res = await apiGet<{ databases: string[] }>("/api/v1/system/databases");
+    if (res.success && res.data?.databases?.length) {
+      setDatabases(res.data.databases);
+      if (!selectedDb) {
+        setSelectedDb(res.data.databases[0]);
+        return res.data.databases[0];
+      }
+    }
+    return selectedDb;
   }
 
   async function boot() {
     setBooting(true);
     const shouldCheckSession = localStorage.getItem(authSessionKey) === "1";
-    await refreshStatus();
+    const db = await loadDatabases();
+    await refreshStatus(db);
     if (shouldCheckSession) {
       const meResponse = await apiGet<{ user: UserClaims }>("/api/v1/auth/me");
       if (meResponse.success && meResponse.data) {
@@ -196,9 +213,9 @@ function AppRoutes() {
     routerNavigate(path);
   }
 
-  async function login(code: string, password: string) {
+  async function login(code: string, password: string, db: string) {
     setLoginMessage("");
-    const response = await apiPost<{ user: UserClaims }>("/api/v1/auth/login", { code, password });
+    const response = await apiPost<{ user: UserClaims }>("/api/v1/auth/login", { code, password, db });
     if (!response.success || !response.data) {
       setLoginMessage(response.error?.detail || response.message || "เข้าสู่ระบบไม่สำเร็จ");
       return;
@@ -209,14 +226,20 @@ function AppRoutes() {
     routerNavigate("/bulk-edit", { replace: true });
   }
 
-  async function bootstrapDatabase() {
-    const response = await apiPost<DatabaseStatus>("/api/v1/system/database-migrate/bootstrap", {});
+  async function bootstrapDatabase(db: string) {
+    const response = await apiPost<DatabaseStatus>("/api/v1/system/database-migrate/bootstrap", { db });
     if (!response.success) {
       setLoginMessage(response.error?.detail || response.message || "ติดตั้งตารางระบบไม่สำเร็จ");
       return;
     }
     setLoginMessage("");
-    await refreshStatus();
+    await refreshStatus(db);
+  }
+
+  async function handleDbChange(db: string) {
+    setSelectedDb(db);
+    setStatus(null);
+    await refreshStatus(db);
   }
 
   async function logout() {
@@ -235,7 +258,7 @@ function AppRoutes() {
     <Routes>
       <Route
         path="/login"
-        element={user ? <Navigate to="/bulk-edit" replace /> : <LoginScreen databaseReady={ready} message={loginMessage} status={status} onBootstrapDatabase={bootstrapDatabase} onLogin={login} />}
+        element={user ? <Navigate to="/bulk-edit" replace /> : <LoginScreen databases={databases} selectedDb={selectedDb} databaseReady={ready} message={loginMessage} status={status} onBootstrapDatabase={bootstrapDatabase} onDbChange={handleDbChange} onLogin={login} />}
       />
       <Route
         path="/*"
@@ -324,37 +347,52 @@ function BootScreen() {
 }
 
 function LoginScreen({
+  databases,
+  selectedDb,
   databaseReady,
   message,
   status,
   onBootstrapDatabase,
+  onDbChange,
   onLogin,
 }: {
+  databases: string[];
+  selectedDb: string;
   databaseReady: boolean;
   message: string;
   status: DatabaseStatus | null;
-  onBootstrapDatabase: () => Promise<void>;
-  onLogin: (code: string, password: string) => Promise<void>;
+  onBootstrapDatabase: (db: string) => Promise<void>;
+  onDbChange: (db: string) => Promise<void>;
+  onLogin: (code: string, password: string, db: string) => Promise<void>;
 }) {
   const [code, setCode] = useState("");
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [installingSchema, setInstallingSchema] = useState(false);
+  const [dbLoading, setDbLoading] = useState(false);
   const canBootstrapDatabase = Boolean(status?.connected && status.requiredSmlReady && !status.appSchemaReady);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
     setSubmitting(true);
-    await onLogin(code, password);
+    await onLogin(code, password, selectedDb);
     setSubmitting(false);
   }
 
   async function installSchema() {
     if (!canBootstrapDatabase || installingSchema) return;
     setInstallingSchema(true);
-    await onBootstrapDatabase();
+    await onBootstrapDatabase(selectedDb);
     setInstallingSchema(false);
   }
+
+  async function handleDbChange(db: string) {
+    setDbLoading(true);
+    await onDbChange(db);
+    setDbLoading(false);
+  }
+
+  const statusLoading = dbLoading || status === null;
 
   return (
     <AuthShell>
@@ -363,17 +401,55 @@ function LoginScreen({
           <ColorModeToggle />
         </Stack>
         <BrandLockup title="next-salesinvoice" subtitle="ระบบจัดการเอกสารขาย" centered />
+
+        {databases.length > 0 ? (
+          <Stack spacing={0.5}>
+            <Typography component="label" htmlFor="db-select" variant="caption" color="text.secondary">
+              ฐานข้อมูล
+            </Typography>
+            <Box
+              component="select"
+              id="db-select"
+              title="เลือกฐานข้อมูล"
+              aria-label="เลือกฐานข้อมูล"
+              value={selectedDb}
+              onChange={(e: React.ChangeEvent<HTMLSelectElement>) => void handleDbChange(e.target.value)}
+              disabled={dbLoading}
+              sx={{
+                p: "8px 12px",
+                borderRadius: 1,
+                border: "1px solid",
+                borderColor: "divider",
+                fontSize: "1rem",
+                width: "100%",
+                bgcolor: "background.paper",
+                color: "text.primary",
+                cursor: dbLoading ? "not-allowed" : "pointer",
+              }}
+            >
+              {databases.map((db) => (
+                <option key={db} value={db}>{db}</option>
+              ))}
+            </Box>
+          </Stack>
+        ) : null}
+
         <Stack direction="row" spacing={1} sx={{ alignItems: "center", justifyContent: "space-between" }}>
-          <StatusBadge tone={databaseReady ? "success" : "danger"}>
-            {databaseReady ? "ฐานข้อมูลพร้อมใช้งาน" : "ฐานข้อมูลยังไม่พร้อม"}
-          </StatusBadge>
-          <Typography color="text.secondary" variant="body2">{status?.database || "ไม่พบฐานข้อมูล"}</Typography>
+          {statusLoading ? (
+            <StatusBadge tone="neutral">กำลังตรวจสอบ...</StatusBadge>
+          ) : (
+            <StatusBadge tone={databaseReady ? "success" : "danger"}>
+              {databaseReady ? "ฐานข้อมูลพร้อมใช้งาน" : "ฐานข้อมูลยังไม่พร้อม"}
+            </StatusBadge>
+          )}
+          <Typography color="text.secondary" variant="body2">{status?.database || selectedDb || "ไม่พบฐานข้อมูล"}</Typography>
         </Stack>
+
         {canBootstrapDatabase ? (
           <Alert
             action={
               <AppButton disabled={installingSchema} onClick={() => void installSchema()} tone="primary" type="button">
-                {installingSchema ? "กำลังติดตั้ง" : "ติดตั้ง"}
+                {installingSchema ? "กำลังติดตั้ง..." : "เตรียม Database"}
               </AppButton>
             }
             severity="warning"
@@ -382,12 +458,13 @@ function LoginScreen({
               "& .MuiAlert-action": { ml: { xs: 0, sm: "auto" }, pl: { xs: 0, sm: 2 }, pt: { xs: 1, sm: 0 } },
             }}
           >
-            ฐานนี้ยังไม่มีตารางระบบ กดติดตั้งก่อนเข้าสู่ระบบ
+            ฐานนี้ยังไม่มีตารางระบบ กดเตรียม Database ก่อนเข้าสู่ระบบ
           </Alert>
         ) : null}
         {status?.connected && !status.requiredSmlReady ? (
           <Alert severity="error">ฐานนี้ยังไม่มีตาราง SML หลักครบถ้วน กรุณาตรวจสอบฐานข้อมูลก่อนใช้งาน</Alert>
         ) : null}
+
         <TextField autoComplete="username" label="รหัสพนักงาน" value={code} onChange={(event) => setCode(event.target.value)} />
         <TextField
           autoComplete="current-password"
@@ -401,6 +478,9 @@ function LoginScreen({
         <AppButton disabled={!databaseReady || !code || !password || submitting} tone="primary" type="submit">
           {submitting ? "กำลังเข้าสู่ระบบ" : "เข้าสู่ระบบ"}
         </AppButton>
+        <Typography color="text.secondary" variant="caption" sx={{ textAlign: "center" }}>
+          กำหนด USER เข้าระบบได้ที่ เมนู 1.1.5 กำหนดพนักงาน ใน SML
+        </Typography>
       </Paper>
     </AuthShell>
   );

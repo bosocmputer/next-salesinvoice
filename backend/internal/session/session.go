@@ -17,6 +17,7 @@ type Claims struct {
 	UserCode    string `json:"userCode"`
 	DisplayName string `json:"displayName"`
 	Role        string `json:"role"`
+	DbName      string `json:"dbName"`    // zero value → caller falls back to cfg.DBName
 	ExpiresAt   int64  `json:"expiresAt"`
 }
 
@@ -29,11 +30,12 @@ func NewManager(secret string, ttl time.Duration) *Manager {
 	return &Manager{secret: []byte(secret), ttl: ttl}
 }
 
-func (m *Manager) Issue(userCode, displayName, role string) (string, Claims, error) {
+func (m *Manager) Issue(userCode, displayName, role, dbName string) (string, Claims, error) {
 	claims := Claims{
 		UserCode:    userCode,
 		DisplayName: displayName,
 		Role:        role,
+		DbName:      dbName,
 		ExpiresAt:   time.Now().Add(m.ttl).Unix(),
 	}
 	body, err := json.Marshal(claims)
