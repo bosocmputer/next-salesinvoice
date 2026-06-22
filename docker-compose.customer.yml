@@ -23,7 +23,7 @@ services:
       # ต่อ Postgres ภายใน network (ไม่ผ่าน host port 6743)
       SML_DB_HOST: sml_postgresql
       SML_DB_PORT: "5432"
-      SML_DB_NAME: data20
+      SML_DB_NAME: data2
       SML_DB_USER: postgres
       SML_DB_PASSWORD: sml
       SML_DB_SSLMODE: disable
