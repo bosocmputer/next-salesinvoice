@@ -1,0 +1,50 @@
+# docker-compose.customer.yml — deploy บน server ลูกค้า (krabiyang-thong)
+#
+# ใช้ image ที่ build + load มาก่อนแล้ว (ไม่ build บนเครื่อง prod ลูกค้า)
+#   build บน 192.168.2.109 ด้วย docker-compose.yml เดิม -> docker save -> load บนลูกค้า
+#
+# ต่อ SML PostgreSQL ภายใน docker network เดิมของลูกค้า (sml_service_network)
+# expose เฉพาะ frontend ที่ host port 6217 (ว่างในช่วง 6211-6218 ที่ลูกค้าเปิด)
+#
+# Start: sudo docker compose -f docker-compose.customer.yml up -d   (ไม่มี --build)
+services:
+  backend:
+    image: next-salesinvoice-backend:latest
+    container_name: nsi-backend
+    environment:
+      SERVER_ADDR: ":8080"
+      APP_ENV: production
+      GIN_MODE: release
+      # เข้าผ่าน http ตรง ๆ ผ่าน Zerotier (ไม่มี TLS) -> ปิด Secure cookie
+      # ถอยกลับเป็น true เมื่อมี HTTPS ข้างหน้า
+      COOKIE_SECURE: "false"
+      SESSION_SECRET: ${SESSION_SECRET}
+      NSI_DATABASE_SETUP_SECRET: ${NSI_DATABASE_SETUP_SECRET:-}
+      # ต่อ Postgres ภายใน network (ไม่ผ่าน host port 6743)
+      SML_DB_HOST: sml_postgresql
+      SML_DB_PORT: "5432"
+      SML_DB_NAME: data20
+      SML_DB_USER: postgres
+      SML_DB_PASSWORD: sml
+      SML_DB_SSLMODE: disable
+      SML_DB_SCHEMA: public
+      SML_DB_MAX_CONNS: "3"
+    networks: [sml_service_network]
+    mem_limit: 256m
+    restart: unless-stopped
+
+  frontend:
+    image: next-salesinvoice-frontend:latest
+    container_name: nsi-frontend
+    ports:
+      - "6217:80"
+    depends_on:
+      - backend
+    networks: [sml_service_network]
+    mem_limit: 128m
+    restart: unless-stopped
+
+networks:
+  sml_service_network:
+    name: sml_service_network
+    external: true

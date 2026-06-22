@@ -36,12 +36,19 @@ type Config struct {
 	// Set NSI_CB_TRANS_SYNC=false to disable as an emergency rollback
 	// without redeploying.
 	CbTransSyncEnabled bool
+	// CookieSecure controls the Secure flag on the session cookie.
+	// Defaults to APP_ENV == "production". Override with COOKIE_SECURE
+	// when the app is reached over plain HTTP on a trusted private
+	// network (e.g. Zerotier) where a Secure cookie would never be sent
+	// and login would silently fail.
+	CookieSecure bool
 }
 
 func Load() (Config, error) {
+	appEnv := getEnv("APP_ENV", "development")
 	cfg := Config{
 		ServerAddr:                   getEnv("SERVER_ADDR", ":8080"),
-		AppEnv:                       getEnv("APP_ENV", "development"),
+		AppEnv:                       appEnv,
 		SessionSecret:                getEnv("SESSION_SECRET", "dev-secret-change-me-at-least-32-chars"),
 		RequestBodyLimit:             int64(getEnvInt("REQUEST_BODY_LIMIT_BYTES", 1_048_576)),
 		AutoCreatePerformanceIndexes: getEnvBool("NSI_AUTO_CREATE_PERFORMANCE_INDEXES", true),
@@ -59,6 +66,7 @@ func Load() (Config, error) {
 		DBLockTimeout:                time.Duration(getEnvInt("SML_DB_LOCK_TIMEOUT_SECONDS", 2)) * time.Second,
 		DBIdleTxTimeout:              time.Duration(getEnvInt("SML_DB_IDLE_TX_TIMEOUT_SECONDS", 10)) * time.Second,
 		CbTransSyncEnabled:           getEnvBool("NSI_CB_TRANS_SYNC", true),
+		CookieSecure:                 getEnvBool("COOKIE_SECURE", appEnv == "production"),
 	}
 	return cfg, cfg.Validate()
 }

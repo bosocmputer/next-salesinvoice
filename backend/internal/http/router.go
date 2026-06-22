@@ -696,7 +696,7 @@ func setSessionCookie(c *gin.Context, cfg config.Config, value string, maxAge in
 		Path:     "/",
 		MaxAge:   maxAge,
 		HttpOnly: true,
-		Secure:   cfg.IsProduction(),
+		Secure:   cfg.CookieSecure,
 		SameSite: sameSite,
 	})
 }

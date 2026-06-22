@@ -16,7 +16,7 @@ func TestSetSessionCookieIsSecureInProduction(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 
-	setSessionCookie(ctx, config.Config{AppEnv: "production"}, "token", 3600)
+	setSessionCookie(ctx, config.Config{AppEnv: "production", CookieSecure: true}, "token", 3600)
 
 	raw := recorder.Header().Get("Set-Cookie")
 	if !strings.Contains(raw, "Secure") {
@@ -27,6 +27,26 @@ func TestSetSessionCookieIsSecureInProduction(t *testing.T) {
 	}
 	if !strings.Contains(raw, "HttpOnly") {
 		t.Fatalf("production cookie missing HttpOnly: %s", raw)
+	}
+}
+
+func TestSetSessionCookieOmitsSecureWhenCookieSecureDisabled(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+
+	// production hardening (SameSite=Strict, HttpOnly) stays on, but Secure
+	// is dropped so login works over plain HTTP on a trusted private network.
+	setSessionCookie(ctx, config.Config{AppEnv: "production", CookieSecure: false}, "token", 3600)
+
+	raw := recorder.Header().Get("Set-Cookie")
+	if strings.Contains(raw, "Secure") {
+		t.Fatalf("cookie should omit Secure when CookieSecure=false: %s", raw)
+	}
+	if !strings.Contains(raw, "SameSite=Strict") {
+		t.Fatalf("cookie missing strict SameSite: %s", raw)
+	}
+	if !strings.Contains(raw, "HttpOnly") {
+		t.Fatalf("cookie missing HttpOnly: %s", raw)
 	}
 }
 
